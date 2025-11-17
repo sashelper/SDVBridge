@@ -1,0 +1,8 @@
+/.vs
+/SDVBridge/bin
+/SDVBridge/.vs
+/SDVBridge/obj
+/MockServer/obj
+/MockServer/bin
+SDVBridge/SAS.Shared.AddIns.dll
+SDVBridge/SAS.Tasks.Toolkit.dll

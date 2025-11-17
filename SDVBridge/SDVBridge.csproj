@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{0E6C75C7-2123-46BB-8CA5-1D3099009EA7}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>SDVBridge</RootNamespace>
+    <AssemblyName>SDVBridge</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup>
+    <SasEgPath Condition=" '$(SasEgPath)' == '' ">$(ProgramFiles)\SASHome\SASEnterpriseGuide\8.2</SasEgPath>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="Microsoft.VisualBasic" />
+    <Reference Include="SAS.Shared.AddIns">
+      <HintPath Condition="Exists('$(SasEgPath)\SAS.Shared.AddIns.dll')">$(SasEgPath)\SAS.Shared.AddIns.dll</HintPath>
+      <HintPath Condition="!Exists('$(SasEgPath)\SAS.Shared.AddIns.dll')">SAS.Shared.AddIns.dll</HintPath>
+    </Reference>
+    <Reference Include="SAS.Tasks.Toolkit">
+      <HintPath Condition="Exists('$(SasEgPath)\SAS.Tasks.Toolkit.dll')">$(SasEgPath)\SAS.Tasks.Toolkit.dll</HintPath>
+      <HintPath Condition="!Exists('$(SasEgPath)\SAS.Tasks.Toolkit.dll')">SAS.Tasks.Toolkit.dll</HintPath>
+    </Reference>
+    <Reference Include="SASInterop">
+      <HintPath>.\SASInterop.dll</HintPath>
+      <EmbedInteropTypes>true</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="SASIOMCommonInterop">
+      <HintPath>.\SASIOMCommonInterop.dll</HintPath>
+      <EmbedInteropTypes>true</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Web" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ServerControlForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ServerControlTask.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Interop\EgInteropContext.cs" />
+    <Compile Include="Server\Dto.cs" />
+    <Compile Include="Server\JsonUtil.cs" />
+    <Compile Include="Server\SDVBridgeLog.cs" />
+    <Compile Include="Server\RestServer.cs" />
+    <Compile Include="Server\SasDatasetExporter.cs" />
+    <Compile Include="Server\SasMetadataService.cs" />
+    <Compile Include="Server\WebServerManager.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
