@@ -1,80 +1,80 @@
-SDVBridge – SAS Enterprise Guide Add-In
-============================================
+SDVBridge – Enterprise Guide REST Bridge
+========================================
 
-This repo holds a starter SAS Enterprise Guide 8.2 custom task written in C#.  
-It now exposes two sample tasks:
+SDVBridge is a SAS Enterprise Guide (EG) custom task that exposes the SAS metadata tree and dataset download workflow through a lightweight HTTP API. Once loaded inside EG, the task spins up a local `HttpListener` that listens on `http://127.0.0.1:<port>/` and serves JSON so any desktop tool can enumerate servers, libraries, members, and export datasets out of EG.
 
-- `HelloWorldTask` — shows a greeting to prove that the add-in loads.
-- `ServerControlTask` — a minimal UI that starts or stops the built-in REST API for surfacing SAS metadata and binary datasets.
+Repository layout
+-----------------
+- `SDVBridge/` – WinForms-based EG custom task (`ServerControlTask`) and the in-process REST server (`Server/*`).
+- `MockServer/` – stand-alone .NET 8 minimal API that mimics the same endpoints when you do not have SAS installed.
+- `API_GUIDE.md` – more detailed request/response samples for each REST endpoint.
+- `SDVBridge.sln` – Visual Studio solution for the add-in project.
 
 Prerequisites
 -------------
-- Windows with SAS Enterprise Guide 8.2 installed (ships the SAS custom task SDK).
-- Visual Studio 2019+ or the .NET Framework 4.7.2 targeting pack/Build Tools.
+Add-in requirements:
+- Windows with SAS Enterprise Guide 8.2 (or newer) that includes the SAS Custom Task SDK.
+- Visual Studio 2019+ (or MSBuild) with .NET Framework 4.7.2 targeting pack.
 - Access to the SAS assemblies `SAS.Shared.AddIns.dll`, `SAS.Tasks.Toolkit.dll`, `SASInterop.dll`, and `SASIOMCommonInterop.dll`.
+  - By default the project looks under `$(ProgramFiles)\SASHome\SASEnterpriseGuide\8.2`.
+  - If EG is installed elsewhere, pass `/p:SasEgPath="D:\Path\To\SASEnterpriseGuide\8.2"` when building or copy the DLLs beside `SDVBridge.csproj`.
 
-The project expects the Enterprise Guide binaries (including the interop DLLs) under `$(ProgramFiles)\SASHome\SASEnterpriseGuide\8.2`.  
-If EG is installed somewhere else, set the MSBuild property `SasEgPath` when you build:
+Mock server requirements:
+- .NET 8 SDK (for `dotnet run`).
 
-```
-msbuild SDVBridge.sln /p:SasEgPath="D:\Apps\SAS\EG82"
-```
+Building the add-in
+-------------------
+1. Open `SDVBridge.sln` in Visual Studio, pick the desired configuration, and build the `SDVBridge` project.
+2. Or build from a Developer Command Prompt:
 
-Building
---------
-1. Open the solution in Visual Studio, restore the correct target framework, and build `SDVBridge`.
-2. Or build from the Developer Command Prompt: `msbuild SDVBridge.sln /t:Rebuild /p:Configuration=Release`.
+   ```
+   msbuild SDVBridge.sln /t:Rebuild /p:Configuration=Release /p:SasEgPath="D:\Apps\SAS\EG82"
+   ```
 
-Deploying the add-in
---------------------
-1. Locate the compiled DLL, e.g. `SDVBridge/bin/Release/SDVBridge.dll`.
-2. Copy it into the Enterprise Guide custom tasks folder: `%AppData%\SAS\EnterpriseGuide\Custom`.
-   (Create the folder if it does not exist. Enterprise Guide reads everything under this path on start-up.)
-3. Launch Enterprise Guide 8.2 and look under **Tasks ▸ SDVBridge Samples**.
+The output assembly is written to `SDVBridge/bin/<Configuration>/SDVBridge.dll`.
 
-### Hello World task
+Deploying into Enterprise Guide
+-------------------------------
+1. Close Enterprise Guide.
+2. Copy `SDVBridge/bin/<Configuration>/SDVBridge.dll` into `%AppData%\SAS\EnterpriseGuide\Custom` (create the folder if it does not exist).
+3. Start EG; the add-in appears under **Tasks ▸ Helper Software ▸ SDVBridge**.
 
-- Choose **Hello World**. A message box should display “Hello from the SDVBridge Enterprise Guide add-in!”.
+Running the SDVBridge REST server inside EG
+-------------------------------------------
+1. Launch **Tasks ▸ Helper Software ▸ SDVBridge**.
+2. Pick a TCP port (default `17832`) and click **Start**. The task displays the listener URL while it is active.
+3. Keep the dialog open while clients connect; click **Stop** before closing EG.
+4. If Windows blocks the listener, grant the HTTP reservation once:
 
-### REST Server Control task
+   ```
+   netsh http add urlacl url=http://127.0.0.1:17832/ user=%USERNAME%
+   ```
 
-1. Open **Tasks ▸ SDVBridge Samples ▸ REST Server Control**.
-2. Enter the TCP port you want the REST API to listen on (default `17832`) and click **Start**.
-3. The status label shows `http://127.0.0.1:<port>/` while the server is running; click **Stop** to shut it down when you are done.
+The server only binds to loopback, enables permissive CORS headers for local tools, and logs to `%TEMP%\SDVBridge\Logs\SDVBridge.log`. Dataset exports are written to `%TEMP%\SDVBridge\<server>\<libref>\<member>.sas7bdat`; delete those files when you are done.
 
-### Embedded REST API
-
-Once the server is running, external tools can call the following endpoints:
+REST API overview
+-----------------
+All payloads are UTF-8 JSON with lowercase property names. See `API_GUIDE.md` for complete examples.
 
 Endpoint | Description
 -------- | -----------
-`GET /servers` | Lists SAS servers visible to Enterprise Guide.
-`GET /servers/{server}/libraries` | Lists libraries on the specified server (assigns them if needed).
-`GET /servers/{server}/libraries/{libref}/datasets` | Lists datasets available inside the library.
-`POST /datasets/open` | Body: `{"server":"SASApp","libref":"SASHELP","member":"CLASS"}`. Saves the dataset to `%TEMP%\SDVBridge\SASApp\SASHELP\CLASS.sas7bdat`, logs each step to the EG debug output, and returns `{ "path": "...\\CLASS.sas7bdat", "filename": "CLASS.sas7bdat" }`.
+`GET /servers` | Lists SAS servers visible to the EG session.
+`GET /servers/{server}/libraries` | Lists libraries (assigning them if necessary).
+`GET /servers/{server}/libraries/{libref}/datasets` | Lists datasets within a library.
+`POST /datasets/open` | Body: `{"server":"SASApp","libref":"SASHELP","member":"CLASS"}`. Downloads the dataset to `%TEMP%\SDVBridge`, keeps the native member name, and returns `{ "path": "C:\\...\\CLASS.sas7bdat", "filename": "CLASS.sas7bdat" }`.
 
-If Windows blocks the listener you may need to grant an HTTP reservation once, for example:
+Mock server workflow
+--------------------
+Use the mock when you only need the HTTP surface:
 
 ```
-netsh http add urlacl url=http://127.0.0.1:17832/ user=%USERNAME%
+dotnet run --project MockServer/MockServer.csproj -- --port 17832
 ```
 
-Keep the REST Server Control window handy so you can start/stop the API as needed during your EG session.
+The mock returns deterministic metadata, writes plain-text `.sas7bdat` placeholders under `%TEMP%\SDVBridge`, and mirrors the same endpoints/JSON casing, so client applications can be exercised without bringing up EG or SAS.
 
-All JSON payloads now use lowercase property names (for example `name`, `libref`, `isassigned`, `rowlimit`). The download endpoint creates a full `.sas7bdat` copy under `%TEMP%\SDVBridge\<server>\<libref>` on the EG workstation, keeps the dataset's original member name for the file (e.g., `CLASS.sas7bdat`), and returns the absolute path so other local tools can read it; clean up those files after use.
-
-Mocking the API without SAS
----------------------------
-If you only need the HTTP surface and do not have SAS Enterprise Guide available, run the lightweight mock included in `MockServer/` (a .NET 8 minimal API that mirrors the endpoints above with canned data).
-
-1. `dotnet run --project MockServer/MockServer.csproj -- --port 17832`
-2. Call the same endpoints (servers, libraries, datasets, `POST /datasets/open`) against the printed URL.
-
-The mock responses contain deterministic sample metadata while dataset requests create a small text `.sas7bdat` placeholder under `%TEMP%\SDVBridge\<server>\<libref>` with the same filename convention and return its path so you can exercise client code paths without EG.
-
-Next steps
-----------
-- Replace the message box with a WinForms UI (`SAS.Tasks.Toolkit.Controls.TaskForm`) and collect user input.
-- Interact with the SAS session through the `Consumer` object (submit code, read data, create results).
-- Add icons (via the `[IconLocation]` attribute) and localization for production-quality tasks.
-- Add authentication/authorization to the REST API, persist port preferences, or expose additional endpoints (submit SAS code, push results into the EG project tree).
+Troubleshooting
+---------------
+- Check `%TEMP%\SDVBridge\Logs\SDVBridge.log` for server and export diagnostics.
+- `netstat -ano | find "17832"` can help confirm the listener is running.
+- If SAS assemblies cannot be resolved at build time, point `SasEgPath` to your EG install directory or copy the DLLs next to the project.
