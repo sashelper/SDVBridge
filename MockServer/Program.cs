@@ -44,6 +44,27 @@ app.MapGet("/servers/{server}/libraries/{libref}/datasets", (string server, stri
     return Results.Json(datasets);
 });
 
+app.MapGet("/servers/{server}/libraries/{libref}/datasets/{member}/columns", (string server, string libref, string member) =>
+{
+    if (!store.TryGetColumns(server, libref, member, out var columns))
+    {
+        return Results.NotFound(new { error = $"No columns found for {server}/{libref}/{member}." });
+    }
+
+    return Results.Json(columns);
+});
+
+app.MapGet("/servers/{server}/libraries/{libref}/datasets/{member}/preview", (string server, string libref, string member, HttpRequest request) =>
+{
+    var limit = int.TryParse(request.Query["limit"], out var parsedLimit) ? parsedLimit : 0;
+    if (!store.TryGetPreview(server, libref, member, limit, out var preview))
+    {
+        return Results.NotFound(new { error = $"No preview found for {server}/{libref}/{member}." });
+    }
+
+    return Results.Json(preview);
+});
+
 app.MapPost("/datasets/open", (DatasetOpenRequest? request) =>
 {
     if (request == null)
@@ -62,6 +83,95 @@ app.MapPost("/datasets/open", (DatasetOpenRequest? request) =>
     }
 });
 
+app.MapPost("/programs/submit", (ProgramSubmitRequest? request) =>
+{
+    if (request == null)
+    {
+        return Results.BadRequest(new { error = "Request body is required." });
+    }
+
+    try
+    {
+        return Results.Json(store.SubmitProgram(request));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/programs/submit/async", (ProgramSubmitRequest? request) =>
+{
+    if (request == null)
+    {
+        return Results.BadRequest(new { error = "Request body is required." });
+    }
+
+    try
+    {
+        var response = store.QueueProgram(request);
+        return Results.Json(response, statusCode: StatusCodes.Status202Accepted);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/jobs/{jobId}", (string jobId) =>
+{
+    if (!store.TryGetJobStatus(jobId, out var response))
+    {
+        return Results.NotFound(new { error = $"Job '{jobId}' was not found." });
+    }
+
+    return Results.Json(response);
+});
+
+app.MapGet("/jobs/{jobId}/artifacts", (string jobId) =>
+{
+    if (!store.TryGetJobArtifacts(jobId, out var response))
+    {
+        return Results.NotFound(new { error = $"Job '{jobId}' was not found." });
+    }
+
+    return Results.Json(response);
+});
+
+app.MapGet("/jobs/{jobId}/artifacts/{artifactId}", (string jobId, string artifactId) =>
+{
+    if (!store.TryGetJobArtifact(jobId, artifactId, out var artifact))
+    {
+        return Results.NotFound(new { error = $"Artifact '{artifactId}' was not found for job '{jobId}'." });
+    }
+
+    return Results.File(
+        artifact.Path,
+        artifact.ContentType ?? "application/octet-stream",
+        fileDownloadName: artifact.Name);
+});
+
+app.MapGet("/jobs/{jobId}/log", (string jobId, HttpRequest request) =>
+{
+    var offset = int.TryParse(request.Query["offset"], out var parsedOffset) ? parsedOffset : 0;
+    if (!store.TryGetJobLog(jobId, offset, out var response))
+    {
+        return Results.NotFound(new { error = $"Job '{jobId}' was not found." });
+    }
+
+    return Results.Json(response);
+});
+
+app.MapGet("/jobs/{jobId}/output", (string jobId) =>
+{
+    if (!store.TryGetJobOutput(jobId, out var response))
+    {
+        return Results.NotFound(new { error = $"Job '{jobId}' was not found." });
+    }
+
+    return Results.Json(response);
+});
+
 app.MapGet("/", () => Results.Json(new
 {
     status = "ok",
@@ -71,7 +181,16 @@ app.MapGet("/", () => Results.Json(new
         "/servers",
         "/servers/{server}/libraries",
         "/servers/{server}/libraries/{libref}/datasets",
-        "/datasets/open"
+        "/servers/{server}/libraries/{libref}/datasets/{member}/columns",
+        "/servers/{server}/libraries/{libref}/datasets/{member}/preview",
+        "/datasets/open",
+        "/programs/submit",
+        "/programs/submit/async",
+        "/jobs/{jobid}",
+        "/jobs/{jobid}/artifacts",
+        "/jobs/{jobid}/artifacts/{artifactid}",
+        "/jobs/{jobid}/log",
+        "/jobs/{jobid}/output"
     }
 }));
 

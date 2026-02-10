@@ -78,6 +78,8 @@
     <Compile Include="Server\SDVBridgeLog.cs" />
     <Compile Include="Server\RestServer.cs" />
     <Compile Include="Server\SasDatasetExporter.cs" />
+    <Compile Include="Server\SasDatasetPreviewService.cs" />
+    <Compile Include="Server\SasProgramService.cs" />
     <Compile Include="Server\SasMetadataService.cs" />
     <Compile Include="Server\WebServerManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

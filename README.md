@@ -1,7 +1,7 @@
 SDVBridge – Enterprise Guide REST Bridge
 ========================================
 
-SDVBridge is a SAS Enterprise Guide (EG) custom task that exposes the SAS metadata tree and dataset download workflow through a lightweight HTTP API. Once loaded inside EG, the task spins up a local `HttpListener` that listens on `http://127.0.0.1:<port>/` and serves JSON so any desktop tool can enumerate servers, libraries, members, and export datasets out of EG.
+SDVBridge is a SAS Enterprise Guide (EG) custom task that exposes the SAS metadata tree, SAS program submission workflow, and dataset download workflow through a lightweight HTTP API. Once loaded inside EG, the task spins up a local `HttpListener` that listens on `http://127.0.0.1:<port>/` and serves JSON so any desktop tool can enumerate servers/libraries/members, submit SAS code, inspect job status/log/output/artifacts, and export datasets out of EG.
 
 Repository layout
 -----------------
@@ -61,7 +61,16 @@ Endpoint | Description
 `GET /servers` | Lists SAS servers visible to the EG session.
 `GET /servers/{server}/libraries` | Lists libraries (assigning them if necessary).
 `GET /servers/{server}/libraries/{libref}/datasets` | Lists datasets within a library.
+`GET /servers/{server}/libraries/{libref}/datasets/{member}/columns` | Lists columns for a dataset (name/label/type/length/format/informat).
+`GET /servers/{server}/libraries/{libref}/datasets/{member}/preview?limit=20` | Returns tabular preview rows (up to `limit`, default 20, max 500).
 `POST /datasets/open` | Body: `{"server":"SASApp","libref":"SASHELP","member":"CLASS"}`. Downloads the dataset to `%TEMP%\SDVBridge`, keeps the native member name, and returns `{ "path": "C:\\...\\CLASS.sas7bdat", "filename": "CLASS.sas7bdat" }`.
+`POST /programs/submit` | Body: `{"server":"SASApp","code":"proc print data=sashelp.class(obs=5); run;"}`. Submits SAS code and returns a job id + status.
+`POST /programs/submit/async` | Queues SAS code and returns immediately with `202 Accepted` + `jobid`.
+`GET /jobs/{jobid}` | Returns job status (`queued/running/completed/failed`) and timestamps.
+`GET /jobs/{jobid}/artifacts` | Returns generated result artifacts (e.g., HTML/PDF/Excel) with local file paths.
+`GET /jobs/{jobid}/artifacts/{artifactid}` | Streams/downloads a specific artifact file by id (or artifact filename).
+`GET /jobs/{jobid}/log` | Returns captured log text for a submitted job. Supports `?offset=<n>` for incremental polling.
+`GET /jobs/{jobid}/output` | Returns captured listing/output text for a submitted job.
 
 Mock server workflow
 --------------------
@@ -71,7 +80,7 @@ Use the mock when you only need the HTTP surface:
 dotnet run --project MockServer/MockServer.csproj -- --port 17832
 ```
 
-The mock returns deterministic metadata, writes plain-text `.sas7bdat` placeholders under `%TEMP%\SDVBridge`, and mirrors the same endpoints/JSON casing, so client applications can be exercised without bringing up EG or SAS.
+The mock returns deterministic metadata, writes plain-text `.sas7bdat` placeholders under `%TEMP%\SDVBridge`, and mirrors the same endpoints/JSON casing (including program submit/log/output jobs), so client applications can be exercised without bringing up EG or SAS.
 
 Troubleshooting
 ---------------
