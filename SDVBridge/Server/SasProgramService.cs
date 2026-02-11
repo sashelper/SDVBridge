@@ -349,7 +349,7 @@ namespace SDVBridge.Server
                     request.Server,
                     submitter,
                     _context.Consumer,
-                    () => PublishProgress(jobId, submitResult, submitter, _context.Consumer));
+                    (result, submitTarget, consumerTarget) => PublishProgress(jobId, result, submitTarget, consumerTarget));
 
                 var log = FirstNonEmpty(
                     TryReadText(submitResult, LogMemberNames),
@@ -740,7 +740,7 @@ namespace SDVBridge.Server
             return "application/octet-stream";
         }
 
-        private object InvokeSubmit(string code, string requestedServer, object submitter, object consumer, Action progressTick)
+        private object InvokeSubmit(string code, string requestedServer, object submitter, object consumer, Action<object, object, object> progressTick)
         {
             var server = string.IsNullOrWhiteSpace(requestedServer)
                 ? (GetMemberValue(consumer, "AssignedServer") as string)
@@ -773,7 +773,7 @@ namespace SDVBridge.Server
             throw new InvalidOperationException("Unable to find a submit API on the current EG consumer.");
         }
 
-        private static bool TryInvokeSubmitOnTarget(object target, string code, string server, object consumer, Action progressTick, out object result, out Exception error)
+        private static bool TryInvokeSubmitOnTarget(object target, string code, string server, object consumer, Action<object, object, object> progressTick, out object result, out Exception error)
         {
             result = null;
             error = null;
@@ -812,14 +812,14 @@ namespace SDVBridge.Server
             return false;
         }
 
-        private static void WaitForSubmitCompletion(object target, object consumer, MethodInfo submitMethod, object submitResult, Action progressTick)
+        private static void WaitForSubmitCompletion(object target, object consumer, MethodInfo submitMethod, object submitResult, Action<object, object, object> progressTick)
         {
-            progressTick?.Invoke();
+            progressTick?.Invoke(submitResult, target, consumer);
 
             if (submitResult is IAsyncResult asyncResult)
             {
-                WaitForAsyncResult(asyncResult, progressTick);
-                progressTick?.Invoke();
+                WaitForAsyncResult(asyncResult, submitResult, target, consumer, progressTick);
+                progressTick?.Invoke(submitResult, target, consumer);
                 return;
             }
 
@@ -842,7 +842,7 @@ namespace SDVBridge.Server
             var maxWait = DateTime.UtcNow.AddHours(12);
             while (DateTime.UtcNow < maxWait)
             {
-                progressTick?.Invoke();
+                progressTick?.Invoke(submitResult, target, consumer);
                 Thread.Sleep(300);
 
                 if (TryGetCompletionState(out var completed, target, consumer) && completed)
@@ -851,10 +851,15 @@ namespace SDVBridge.Server
                 }
             }
 
-            progressTick?.Invoke();
+            progressTick?.Invoke(submitResult, target, consumer);
         }
 
-        private static void WaitForAsyncResult(IAsyncResult asyncResult, Action progressTick)
+        private static void WaitForAsyncResult(
+            IAsyncResult asyncResult,
+            object submitResult,
+            object submitTarget,
+            object consumer,
+            Action<object, object, object> progressTick)
         {
             if (asyncResult == null)
             {
@@ -864,7 +869,7 @@ namespace SDVBridge.Server
             var maxWait = DateTime.UtcNow.AddHours(12);
             while (!asyncResult.IsCompleted && DateTime.UtcNow < maxWait)
             {
-                progressTick?.Invoke();
+                progressTick?.Invoke(submitResult, submitTarget, consumer);
 
                 var waitHandle = asyncResult.AsyncWaitHandle;
                 if (waitHandle != null)
@@ -1111,11 +1116,6 @@ namespace SDVBridge.Server
                 return null;
             }
 
-            if (TryCoerceToText(root, out var directText) && !string.IsNullOrWhiteSpace(directText))
-            {
-                return directText;
-            }
-
             foreach (var memberName in memberNames)
             {
                 var value = GetMemberValue(root, memberName);
@@ -1128,6 +1128,11 @@ namespace SDVBridge.Server
                 {
                     return text;
                 }
+            }
+
+            if (TryCoerceToText(root, out var directText) && !string.IsNullOrWhiteSpace(directText))
+            {
+                return directText;
             }
 
             return null;
@@ -1217,6 +1222,11 @@ namespace SDVBridge.Server
                 }
             }
 
+            if (ShouldSkipToStringFallback(value))
+            {
+                return false;
+            }
+
             var toStringMethod = value.GetType().GetMethod("ToString", Type.EmptyTypes);
             if (toStringMethod != null && toStringMethod.DeclaringType != typeof(object))
             {
@@ -1225,6 +1235,26 @@ namespace SDVBridge.Server
             }
 
             return false;
+        }
+
+        private static bool ShouldSkipToStringFallback(object value)
+        {
+            if (value == null)
+            {
+                return true;
+            }
+
+            var type = value.GetType();
+            if (type.IsPrimitive || type.IsEnum)
+            {
+                return true;
+            }
+
+            return value is decimal
+                   || value is DateTime
+                   || value is DateTimeOffset
+                   || value is TimeSpan
+                   || value is Guid;
         }
 
         private static object GetMemberValue(object target, string memberName)
