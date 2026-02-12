@@ -134,61 +134,52 @@ namespace SDVBridge.Server
                 }
                 else if (ctx.Request.HttpMethod == "POST" && path == "datasets/open")
                 {
-                    using (var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding))
+                    var payload = await ReadRequestBodyAsync(ctx.Request).ConfigureAwait(false);
+                    LogInfo($"/datasets/open request body: {payload}");
+
+                    var request = JsonUtil.Deserialize<DatasetOpenRequest>(payload ?? string.Empty);
+                    if (request == null)
                     {
-                        var payload = await reader.ReadToEndAsync().ConfigureAwait(false);
-                        LogInfo($"/datasets/open request body: {payload}");
-
-                        var request = JsonUtil.Deserialize<DatasetOpenRequest>(payload ?? string.Empty);
-                        if (request == null)
-                        {
-                            throw new InvalidOperationException("Request body is required.");
-                        }
-
-                        var result = await _exporter.ExportAsync(request).ConfigureAwait(false);
-                        LogInfo($"/datasets/open success -> {result.LocalPath}");
-                        WriteJson(ctx.Response, HttpStatusCode.OK, new DatasetOpenResponse
-                        {
-                            Path = result.LocalPath,
-                            FileName = result.FileName
-                        });
+                        throw new InvalidOperationException("Request body is required.");
                     }
+
+                    var result = await _exporter.ExportAsync(request).ConfigureAwait(false);
+                    LogInfo($"/datasets/open success -> {result.LocalPath}");
+                    WriteJson(ctx.Response, HttpStatusCode.OK, new DatasetOpenResponse
+                    {
+                        Path = result.LocalPath,
+                        FileName = result.FileName
+                    });
                 }
                 else if (ctx.Request.HttpMethod == "POST" && path == "programs/submit")
                 {
-                    using (var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding))
+                    var payload = await ReadRequestBodyAsync(ctx.Request).ConfigureAwait(false);
+                    LogInfo($"/programs/submit request body: {payload}");
+
+                    var request = JsonUtil.Deserialize<ProgramSubmitRequest>(payload ?? string.Empty);
+                    if (request == null)
                     {
-                        var payload = await reader.ReadToEndAsync().ConfigureAwait(false);
-                        LogInfo($"/programs/submit request body: {payload}");
-
-                        var request = JsonUtil.Deserialize<ProgramSubmitRequest>(payload ?? string.Empty);
-                        if (request == null)
-                        {
-                            throw new InvalidOperationException("Request body is required.");
-                        }
-
-                        var result = await _programService.SubmitAsync(request).ConfigureAwait(false);
-                        LogInfo($"/programs/submit response -> JobId={result.JobId}, Status={result.Status}");
-                        WriteJson(ctx.Response, HttpStatusCode.OK, result);
+                        throw new InvalidOperationException("Request body is required.");
                     }
+
+                    var result = await _programService.SubmitAsync(request).ConfigureAwait(false);
+                    LogInfo($"/programs/submit response -> JobId={result.JobId}, Status={result.Status}");
+                    WriteJson(ctx.Response, HttpStatusCode.OK, result);
                 }
                 else if (ctx.Request.HttpMethod == "POST" && path == "programs/submit/async")
                 {
-                    using (var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding))
+                    var payload = await ReadRequestBodyAsync(ctx.Request).ConfigureAwait(false);
+                    LogInfo($"/programs/submit/async request body: {payload}");
+
+                    var request = JsonUtil.Deserialize<ProgramSubmitRequest>(payload ?? string.Empty);
+                    if (request == null)
                     {
-                        var payload = await reader.ReadToEndAsync().ConfigureAwait(false);
-                        LogInfo($"/programs/submit/async request body: {payload}");
-
-                        var request = JsonUtil.Deserialize<ProgramSubmitRequest>(payload ?? string.Empty);
-                        if (request == null)
-                        {
-                            throw new InvalidOperationException("Request body is required.");
-                        }
-
-                        var result = _programService.QueueSubmit(request);
-                        LogInfo($"/programs/submit/async response -> JobId={result.JobId}, Status={result.Status}");
-                        WriteJson(ctx.Response, HttpStatusCode.Accepted, result);
+                        throw new InvalidOperationException("Request body is required.");
                     }
+
+                    var result = _programService.QueueSubmit(request);
+                    LogInfo($"/programs/submit/async response -> JobId={result.JobId}, Status={result.Status}");
+                    WriteJson(ctx.Response, HttpStatusCode.Accepted, result);
                 }
                 else if (ctx.Request.HttpMethod == "GET" &&
                          rawSegments.Length == 2 &&
@@ -306,6 +297,41 @@ namespace SDVBridge.Server
             }
 
             return 0;
+        }
+
+        private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
+        {
+            if (request == null)
+            {
+                return string.Empty;
+            }
+
+            var encoding = ResolveRequestEncoding(request);
+            using (var reader = new StreamReader(request.InputStream, encoding, true))
+            {
+                return await reader.ReadToEndAsync().ConfigureAwait(false);
+            }
+        }
+
+        private static Encoding ResolveRequestEncoding(HttpListenerRequest request)
+        {
+            if (request == null)
+            {
+                return Encoding.UTF8;
+            }
+
+            if (HasCharsetParameter(request.ContentType))
+            {
+                return request.ContentEncoding ?? Encoding.UTF8;
+            }
+
+            return Encoding.UTF8;
+        }
+
+        private static bool HasCharsetParameter(string contentType)
+        {
+            return !string.IsNullOrWhiteSpace(contentType)
+                && contentType.IndexOf("charset=", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static void WriteFile(HttpListenerResponse response, HttpStatusCode statusCode, string filePath, string contentType, string fileName)

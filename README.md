@@ -70,7 +70,7 @@ The server only binds to loopback, enables permissive CORS headers for local too
 
 REST API overview
 -----------------
-All payloads are UTF-8 JSON with lowercase property names. See `API_GUIDE.md` for complete examples.
+All payloads are UTF-8 JSON with lowercase property names. For POST requests, set `Content-Type: application/json; charset=utf-8`. See `API_GUIDE.md` for complete examples.
 
 Endpoint | Description
 -------- | -----------

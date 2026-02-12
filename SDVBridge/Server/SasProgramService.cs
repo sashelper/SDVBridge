@@ -103,6 +103,7 @@ namespace SDVBridge.Server
 
         private const string TempLogFileref = "_sdvlog";
         private const string TempOutputFileref = "_sdvlst";
+        private const string SubmitSafetyPreamble = ";*';*\";*/;quit;run;";
 
         private readonly EgInteropContext _context;
         private readonly object _syncRoot = new object();
@@ -1048,15 +1049,19 @@ namespace SDVBridge.Server
 
         private static string WrapSubmittedCode(string originalCode, ProgramCaptureFiles captureFiles)
         {
+            var userCode = RemoveLeadingSubmitSafetyPreamble(originalCode);
             if (captureFiles == null)
             {
-                return originalCode ?? string.Empty;
+                var direct = new StringBuilder();
+                direct.AppendLine(SubmitSafetyPreamble);
+                direct.AppendLine(userCode);
+                return direct.ToString();
             }
 
-            var userCode = originalCode ?? string.Empty;
             if (captureFiles.UseTempServerFileref)
             {
                 var sbFileref = new StringBuilder();
+                sbFileref.AppendLine(SubmitSafetyPreamble);
                 sbFileref.AppendLine($"filename {captureFiles.SubmitLogPath} temp;");
                 sbFileref.AppendLine($"filename {captureFiles.SubmitOutputPath} temp;");
                 sbFileref.AppendLine($"proc printto log={captureFiles.SubmitLogPath} print={captureFiles.SubmitOutputPath} new;");
@@ -1070,6 +1075,7 @@ namespace SDVBridge.Server
             var logRef = TempLogFileref;
             var outRef = TempOutputFileref;
             var sb = new StringBuilder();
+            sb.AppendLine(SubmitSafetyPreamble);
             sb.AppendLine($"filename {logRef} {ToSasStringLiteral(captureFiles.SubmitLogPath)};");
             sb.AppendLine($"filename {outRef} {ToSasStringLiteral(captureFiles.SubmitOutputPath)};");
             sb.AppendLine($"proc printto log={logRef} print={outRef} new;");
@@ -1080,6 +1086,19 @@ namespace SDVBridge.Server
             sb.AppendLine($"filename {logRef} clear;");
             sb.AppendLine($"filename {outRef} clear;");
             return sb.ToString();
+        }
+
+        private static string RemoveLeadingSubmitSafetyPreamble(string code)
+        {
+            var text = code ?? string.Empty;
+            var trimmed = text.TrimStart();
+            if (!trimmed.StartsWith(SubmitSafetyPreamble, StringComparison.Ordinal))
+            {
+                return text;
+            }
+
+            var remaining = trimmed.Substring(SubmitSafetyPreamble.Length);
+            return remaining.TrimStart('\r', '\n');
         }
 
         private static bool IsLikelyServerFileref(string value)

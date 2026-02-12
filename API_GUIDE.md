@@ -18,7 +18,7 @@ General Notes
 -------------
 - Base URL: `http://127.0.0.1:<port>/`
 - All responses are UTF-8 JSON unless noted.
-- Set `Content-Type: application/json` on POST requests.
+- Set `Content-Type: application/json; charset=utf-8` on POST requests.
 - Property names in the JSON payloads are lowercase (e.g., `name`, `libref`, `rowlimit`).
 - `/datasets/open` writes a `.sas7bdat` copy under `%TEMP%\SDVBridge\<server>\<libref>` and returns its full path so other local applications can open it.
 - Program submit jobs are kept in-memory by the running task process (up to 200 recent jobs). Restarting/stopping the task clears job history.
@@ -126,7 +126,7 @@ Downloads the dataset to a temp directory on the EG workstation and returns its 
 **Request**
 ```
 POST http://127.0.0.1:17832/datasets/open
-Content-Type: application/json
+Content-Type: application/json; charset=utf-8
 
 {
   "server": "SASApp",
@@ -159,7 +159,7 @@ Submits SAS code via the active EG session and returns a job id.
 **Request**
 ```
 POST http://127.0.0.1:17832/programs/submit
-Content-Type: application/json
+Content-Type: application/json; charset=utf-8
 
 {
   "server": "SASApp",
@@ -195,7 +195,7 @@ Queues SAS code and returns immediately with a job id.
 **Request**
 ```
 POST http://127.0.0.1:17832/programs/submit/async
-Content-Type: application/json
+Content-Type: application/json; charset=utf-8
 
 {
   "server": "SASApp",
