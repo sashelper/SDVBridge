@@ -8,7 +8,6 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using SAS.Shared.AddIns;
 using SAS.Tasks.Toolkit;
 using SDVBridge.Interop;
 
@@ -85,6 +84,7 @@ namespace SDVBridge.Server
             "Busy",
             "IsRunning",
             "Running",
+            "SubmitPending",
             "IsSubmitting",
             "Submitting",
             "IsExecuting",
@@ -100,6 +100,9 @@ namespace SDVBridge.Server
             "SubmitStatus",
             "ExecutionStatus"
         };
+
+        private const string TempLogFileref = "_sdvlog";
+        private const string TempOutputFileref = "_sdvlst";
 
         private readonly EgInteropContext _context;
         private readonly object _syncRoot = new object();
@@ -361,13 +364,18 @@ namespace SDVBridge.Server
         {
             object submitter = null;
             object submitResult = null;
-            SubmitCallbackSink submitSink = null;
             SasServer captureServer = null;
             ProgramCaptureFiles captureFiles = null;
             try
             {
                 var code = request.Code ?? string.Empty;
                 submitter = GetMemberValue(_context.Consumer, "Submit");
+                var configuredServerLogPath = FirstNonEmpty(
+                    NormalizeOptionalPath(request.ServerLogPath),
+                    NormalizeOptionalPath(WebServerManager.DefaultServerLogPath));
+                var configuredServerOutputPath = FirstNonEmpty(
+                    NormalizeOptionalPath(request.ServerOutputPath),
+                    NormalizeOptionalPath(WebServerManager.DefaultServerOutputPath));
                 var preferredServerName = string.IsNullOrWhiteSpace(request.Server)
                     ? (_context.Consumer == null ? null : _context.Consumer.AssignedServer)
                     : request.Server;
@@ -381,9 +389,14 @@ namespace SDVBridge.Server
                     Log($"Capture server resolved: Name='{captureServer.Name}', DisplayName='{captureServer.DisplayName}'.");
                 }
 
-                captureFiles = CreateProgramCaptureFiles(jobId, captureServer);
+                captureFiles = CreateProgramCaptureFiles(
+                    jobId,
+                    captureServer,
+                    configuredServerLogPath,
+                    configuredServerOutputPath);
                 var submitCode = WrapSubmittedCode(code, captureFiles);
-                Log($"Using PROC PRINTTO capture files for job {jobId}: submitLog='{captureFiles.SubmitLogPath}', submitOutput='{captureFiles.SubmitOutputPath}', localLog='{captureFiles.LogPath}', localOutput='{captureFiles.OutputPath}', mode={(captureFiles.UsesServerCapture ? "server" : "local")}.");
+                Log($"Using PROC PRINTTO capture files for job {jobId}: submitLog='{captureFiles.SubmitLogPath}', submitOutput='{captureFiles.SubmitOutputPath}', localLog='{captureFiles.LogPath}', localOutput='{captureFiles.OutputPath}', mode={(captureFiles.UsesServerCapture ? "server" : "local")}, tempFilerefMode={captureFiles.UseTempServerFileref}, configuredServerPaths={captureFiles.UsesConfiguredServerPaths}.");
+                Log($"Submitting SAS code for job {jobId}:{Environment.NewLine}{submitCode}");
 
                 PublishProgress(jobId, submitResult, submitter, _context.Consumer);
                 PublishProgressFromFiles(jobId, captureFiles.LogPath, captureFiles.OutputPath);
@@ -396,8 +409,7 @@ namespace SDVBridge.Server
                     {
                         PublishProgress(jobId, result, submitTarget, consumerTarget);
                         PublishProgressFromFiles(jobId, captureFiles.LogPath, captureFiles.OutputPath);
-                    },
-                    out submitSink);
+                    });
 
                 if (captureFiles.UsesServerCapture)
                 {
@@ -406,7 +418,6 @@ namespace SDVBridge.Server
                 PublishProgressFromFiles(jobId, captureFiles.LogPath, captureFiles.OutputPath);
                 var log = FirstNonEmpty(
                     TryReadFileText(captureFiles.LogPath),
-                    submitSink == null ? null : submitSink.Log,
                     TryReadText(submitResult, LogMemberNames),
                     TryReadText(submitter, LogMemberNames),
                     TryReadText(_context.Consumer, LogMemberNames)) ?? string.Empty;
@@ -438,7 +449,6 @@ namespace SDVBridge.Server
                     captureFiles == null ? null : captureFiles.OutputPath);
                 var failedLog = FirstNonEmpty(
                     captureFiles == null ? null : TryReadFileText(captureFiles.LogPath),
-                    submitSink == null ? null : submitSink.Log,
                     TryReadText(submitResult, LogMemberNames),
                     TryReadText(submitter, LogMemberNames),
                     TryReadText(_context.Consumer, LogMemberNames),
@@ -675,6 +685,8 @@ namespace SDVBridge.Server
             return new ProgramSubmitRequest
             {
                 Server = request.Server,
+                ServerLogPath = request.ServerLogPath,
+                ServerOutputPath = request.ServerOutputPath,
                 Code = request.Code
             };
         }
@@ -685,6 +697,13 @@ namespace SDVBridge.Server
             if (string.IsNullOrWhiteSpace(request.Code))
             {
                 throw new ArgumentException("SAS code is required.", nameof(request.Code));
+            }
+
+            var hasServerLogPath = !string.IsNullOrWhiteSpace(request.ServerLogPath);
+            var hasServerOutputPath = !string.IsNullOrWhiteSpace(request.ServerOutputPath);
+            if (hasServerLogPath != hasServerOutputPath)
+            {
+                throw new ArgumentException("ServerLogPath and ServerOutputPath must be provided together.");
             }
         }
 
@@ -980,7 +999,11 @@ namespace SDVBridge.Server
             return "application/octet-stream";
         }
 
-        private static ProgramCaptureFiles CreateProgramCaptureFiles(string jobId, SasServer server)
+        private static ProgramCaptureFiles CreateProgramCaptureFiles(
+            string jobId,
+            SasServer server,
+            string preferredServerLogPath,
+            string preferredServerOutputPath)
         {
             var safeJobId = SanitizeFileName(string.IsNullOrWhiteSpace(jobId) ? Guid.NewGuid().ToString("N") : jobId);
             var folder = Path.Combine(Path.GetTempPath(), "SDVBridge", "Jobs", safeJobId, "Capture");
@@ -989,8 +1012,10 @@ namespace SDVBridge.Server
             var localOutputPath = Path.Combine(folder, "submit.lst");
             string remoteLogPath = null;
             string remoteOutputPath = null;
+            var useConfiguredServerPaths = !string.IsNullOrWhiteSpace(preferredServerLogPath)
+                                           && !string.IsNullOrWhiteSpace(preferredServerOutputPath);
 
-            if (server != null)
+            if (!useConfiguredServerPaths && server != null)
             {
                 remoteLogPath = TryCreateRemoteCaptureFile(
                     server,
@@ -1002,12 +1027,22 @@ namespace SDVBridge.Server
                     "output");
             }
 
+            var useTempServerFileref = IsLikelyServerFileref(remoteLogPath) && IsLikelyServerFileref(remoteOutputPath);
+            var submitLogPath = useTempServerFileref
+                ? TempLogFileref
+                : (string.IsNullOrWhiteSpace(remoteLogPath) ? localLogPath : remoteLogPath);
+            var submitOutputPath = useTempServerFileref
+                ? TempOutputFileref
+                : (string.IsNullOrWhiteSpace(remoteOutputPath) ? localOutputPath : remoteOutputPath);
+
             return new ProgramCaptureFiles
             {
                 LogPath = localLogPath,
                 OutputPath = localOutputPath,
-                SubmitLogPath = string.IsNullOrWhiteSpace(remoteLogPath) ? localLogPath : remoteLogPath,
-                SubmitOutputPath = string.IsNullOrWhiteSpace(remoteOutputPath) ? localOutputPath : remoteOutputPath
+                SubmitLogPath = useConfiguredServerPaths ? preferredServerLogPath : submitLogPath,
+                SubmitOutputPath = useConfiguredServerPaths ? preferredServerOutputPath : submitOutputPath,
+                UseTempServerFileref = useConfiguredServerPaths ? false : useTempServerFileref,
+                UsesConfiguredServerPaths = useConfiguredServerPaths
             };
         }
 
@@ -1019,9 +1054,21 @@ namespace SDVBridge.Server
             }
 
             var userCode = originalCode ?? string.Empty;
-            var refSuffix = Guid.NewGuid().ToString("N").Substring(0, 10);
-            var logRef = "_sdvlog" + refSuffix;
-            var outRef = "_sdvout" + refSuffix;
+            if (captureFiles.UseTempServerFileref)
+            {
+                var sbFileref = new StringBuilder();
+                sbFileref.AppendLine($"filename {captureFiles.SubmitLogPath} temp;");
+                sbFileref.AppendLine($"filename {captureFiles.SubmitOutputPath} temp;");
+                sbFileref.AppendLine($"proc printto log={captureFiles.SubmitLogPath} print={captureFiles.SubmitOutputPath} new;");
+                sbFileref.AppendLine("run;");
+                sbFileref.AppendLine(userCode);
+                sbFileref.AppendLine("proc printto;");
+                sbFileref.AppendLine("run;");
+                return sbFileref.ToString();
+            }
+
+            var logRef = TempLogFileref;
+            var outRef = TempOutputFileref;
             var sb = new StringBuilder();
             sb.AppendLine($"filename {logRef} {ToSasStringLiteral(captureFiles.SubmitLogPath)};");
             sb.AppendLine($"filename {outRef} {ToSasStringLiteral(captureFiles.SubmitOutputPath)};");
@@ -1033,6 +1080,32 @@ namespace SDVBridge.Server
             sb.AppendLine($"filename {logRef} clear;");
             sb.AppendLine($"filename {outRef} clear;");
             return sb.ToString();
+        }
+
+        private static bool IsLikelyServerFileref(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var text = value.Trim();
+            if (!text.StartsWith("#", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return text.IndexOfAny(new[] { '\\', '/', ':', ' ', '\t', '\r', '\n', '"' }) < 0;
+        }
+
+        private static string NormalizeOptionalPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            return path.Trim();
         }
 
         private static string ToSasStringLiteral(string value)
@@ -1156,40 +1229,51 @@ namespace SDVBridge.Server
                 ? ".tmp"
                 : (extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension);
 
-            var copiedPath = string.Empty;
-            try
+            var maxWait = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < maxWait)
             {
-                copiedPath = server.CopyServerFileToLocal(remotePath, normalizedExt);
-            }
-            catch
-            {
+                var copiedPath = string.Empty;
                 try
                 {
-                    copiedPath = server.CopyServerFileToLocal(
-                        remotePath,
-                        Path.GetFileNameWithoutExtension(localTargetPath) ?? "sdvbridge_capture",
-                        normalizedExt);
+                    copiedPath = server.CopyServerFileToLocal(remotePath, normalizedExt);
                 }
                 catch
                 {
-                    copiedPath = null;
+                    try
+                    {
+                        copiedPath = server.CopyServerFileToLocal(
+                            remotePath,
+                            Path.GetFileNameWithoutExtension(localTargetPath) ?? "sdvbridge_capture",
+                            normalizedExt);
+                    }
+                    catch
+                    {
+                        copiedPath = null;
+                    }
                 }
-            }
 
-            if (string.IsNullOrWhiteSpace(copiedPath))
-            {
-                return File.Exists(localTargetPath);
-            }
+                if (!string.IsNullOrWhiteSpace(copiedPath))
+                {
+                    copiedPath = copiedPath.Trim().Trim('"');
+                    if (File.Exists(copiedPath))
+                    {
+                        if (!string.Equals(copiedPath, localTargetPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            File.Copy(copiedPath, localTargetPath, true);
+                        }
 
-            copiedPath = copiedPath.Trim().Trim('"');
-            if (!File.Exists(copiedPath))
-            {
-                return File.Exists(localTargetPath);
-            }
+                        if (File.Exists(localTargetPath))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                else if (File.Exists(localTargetPath))
+                {
+                    return true;
+                }
 
-            if (!string.Equals(copiedPath, localTargetPath, StringComparison.OrdinalIgnoreCase))
-            {
-                File.Copy(copiedPath, localTargetPath, true);
+                Thread.Sleep(250);
             }
 
             return File.Exists(localTargetPath);
@@ -1200,10 +1284,8 @@ namespace SDVBridge.Server
             string requestedServer,
             object submitter,
             object consumer,
-            Action<object, object, object> progressTick,
-            out SubmitCallbackSink submitSink)
+            Action<object, object, object> progressTick)
         {
-            submitSink = null;
             var server = string.IsNullOrWhiteSpace(requestedServer)
                 ? (GetMemberValue(consumer, "AssignedServer") as string)
                 : requestedServer;
@@ -1216,9 +1298,8 @@ namespace SDVBridge.Server
                     continue;
                 }
 
-                if (TryInvokeSubmitOnTarget(target, code, server, consumer, progressTick, out var result, out var error, out var targetSink))
+                if (TryInvokeSubmitOnTarget(target, code, server, consumer, progressTick, out var result, out var error))
                 {
-                    submitSink = targetSink;
                     return result;
                 }
 
@@ -1243,25 +1324,21 @@ namespace SDVBridge.Server
             object consumer,
             Action<object, object, object> progressTick,
             out object result,
-            out Exception error,
-            out SubmitCallbackSink submitSink)
+            out Exception error)
         {
             result = null;
             error = null;
-            submitSink = null;
             var type = target.GetType();
             var methods = type
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(m => SubmitMethodNames.Any(name => string.Equals(name, m.Name, StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(m => SubmitMethodRank(m.Name))
-                .ThenByDescending(HasSubmitSinkParameter)
                 .ThenBy(m => m.GetParameters().Length)
                 .ToList();
 
             foreach (var method in methods)
             {
-                var methodSink = new SubmitCallbackSink();
-                if (!TryBuildSubmitArgs(method, code, server, consumer, methodSink, out var args, out var usedSubmitSink))
+                if (!TryBuildSubmitArgs(method, code, server, consumer, out var args))
                 {
                     continue;
                 }
@@ -1270,8 +1347,7 @@ namespace SDVBridge.Server
                 {
                     result = method.Invoke(target, args);
                     Log($"Submit API selected: targetType={target.GetType().FullName}, method={FormatMethodSignature(method)}, resultType={(result == null ? "<null>" : result.GetType().FullName)}");
-                    WaitForSubmitCompletion(target, consumer, method, result, progressTick, usedSubmitSink ? methodSink : null);
-                    submitSink = usedSubmitSink ? methodSink : null;
+                    WaitForSubmitCompletion(target, consumer, method, result, progressTick);
 
                     return true;
                 }
@@ -1293,35 +1369,30 @@ namespace SDVBridge.Server
             object consumer,
             MethodInfo submitMethod,
             object submitResult,
-            Action<object, object, object> progressTick,
-            SubmitCallbackSink submitSink)
+            Action<object, object, object> progressTick)
         {
             progressTick?.Invoke(submitResult, target, consumer);
 
             if (submitResult is IAsyncResult asyncResult)
             {
                 WaitForAsyncResult(asyncResult, submitResult, target, consumer, progressTick);
-                WaitForSubmitCallback(submitSink, submitResult, target, consumer, progressTick);
                 progressTick?.Invoke(submitResult, target, consumer);
                 return;
             }
 
             if (submitMethod == null)
             {
-                WaitForSubmitCallback(submitSink, submitResult, target, consumer, progressTick);
                 return;
             }
 
             if (submitMethod.Name.IndexOf("Wait", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 submitMethod.Name.IndexOf("Synchronous", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                WaitForSubmitCallback(submitSink, submitResult, target, consumer, progressTick);
                 return;
             }
 
             if (!LooksLikeRunning(target, consumer))
             {
-                WaitForSubmitCallback(submitSink, submitResult, target, consumer, progressTick);
                 return;
             }
 
@@ -1337,28 +1408,7 @@ namespace SDVBridge.Server
                 }
             }
 
-            WaitForSubmitCallback(submitSink, submitResult, target, consumer, progressTick);
             progressTick?.Invoke(submitResult, target, consumer);
-        }
-
-        private static void WaitForSubmitCallback(
-            SubmitCallbackSink submitSink,
-            object submitResult,
-            object submitTarget,
-            object consumer,
-            Action<object, object, object> progressTick)
-        {
-            if (submitSink == null || submitSink.IsCompleted)
-            {
-                return;
-            }
-
-            var maxWait = DateTime.UtcNow.AddSeconds(8);
-            while (!submitSink.IsCompleted && DateTime.UtcNow < maxWait)
-            {
-                progressTick?.Invoke(submitResult, submitTarget, consumer);
-                Thread.Sleep(120);
-            }
         }
 
         private static void WaitForAsyncResult(
@@ -1526,13 +1576,10 @@ namespace SDVBridge.Server
             string code,
             string server,
             object consumer,
-            SubmitCallbackSink submitSink,
-            out object[] args,
-            out bool usedSubmitSink)
+            out object[] args)
         {
             var parameters = method.GetParameters();
             args = new object[parameters.Length];
-            usedSubmitSink = false;
 
             var usedCode = false;
             var usedServer = false;
@@ -1549,10 +1596,8 @@ namespace SDVBridge.Server
                     code,
                     server,
                     consumer,
-                    submitSink,
                     ref usedCode,
                     ref usedServer,
-                    ref usedSubmitSink,
                     out var resolved);
                 if (!resolved)
                 {
@@ -1570,23 +1615,13 @@ namespace SDVBridge.Server
             string code,
             string server,
             object consumer,
-            SubmitCallbackSink submitSink,
             ref bool usedCode,
             ref bool usedServer,
-            ref bool usedSubmitSink,
             out bool resolved)
         {
             resolved = true;
             var parameterName = (parameter.Name ?? string.Empty).ToLowerInvariant();
             var parameterType = parameter.ParameterType;
-
-            if (!usedSubmitSink &&
-                submitSink != null &&
-                IsSubmitSinkParameterType(parameterType))
-            {
-                usedSubmitSink = true;
-                return submitSink;
-            }
 
             if (parameterType == typeof(string))
             {
@@ -1662,36 +1697,6 @@ namespace SDVBridge.Server
                 resolved = false;
                 return null;
             }
-        }
-
-        private static bool IsSubmitSinkParameterType(Type parameterType)
-        {
-            if (parameterType == null)
-            {
-                return false;
-            }
-
-            if (typeof(ISASTaskSubmitSink).IsAssignableFrom(parameterType))
-            {
-                return true;
-            }
-
-            return string.Equals(
-                parameterType.FullName,
-                typeof(ISASTaskSubmitSink).FullName,
-                StringComparison.Ordinal);
-        }
-
-        private static bool HasSubmitSinkParameter(MethodInfo method)
-        {
-            if (method == null)
-            {
-                return false;
-            }
-
-            return method
-                .GetParameters()
-                .Any(p => IsSubmitSinkParameterType(p.ParameterType));
         }
 
         private static string TryReadText(object root, string[] memberNames)
@@ -2050,6 +2055,10 @@ namespace SDVBridge.Server
 
             public string SubmitOutputPath { get; set; }
 
+            public bool UseTempServerFileref { get; set; }
+
+            public bool UsesConfiguredServerPaths { get; set; }
+
             public bool UsesServerCapture
             {
                 get
@@ -2059,31 +2068,6 @@ namespace SDVBridge.Server
                            && (!string.Equals(SubmitLogPath, LogPath, StringComparison.OrdinalIgnoreCase)
                                || !string.Equals(SubmitOutputPath, OutputPath, StringComparison.OrdinalIgnoreCase));
                 }
-            }
-        }
-
-        private sealed class SubmitCallbackSink : ISASTaskSubmitSink
-        {
-            private readonly ManualResetEventSlim _completed = new ManualResetEventSlim(false);
-            private int _cookie;
-            private bool _success;
-            private string _log;
-
-            public bool IsCompleted => _completed.IsSet;
-
-            public int Cookie => _cookie;
-
-            public bool Success => _success;
-
-            public string Log => _log;
-
-            public void SubmitComplete(int Cookie, bool Success, string Log)
-            {
-                _cookie = Cookie;
-                _success = Success;
-                _log = Log;
-                SasProgramService.Log($"SubmitComplete callback received. Cookie={Cookie}, Success={Success}, LogLength={(Log == null ? 0 : Log.Length)}");
-                _completed.Set();
             }
         }
 

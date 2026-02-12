@@ -10,6 +10,8 @@ namespace SDVBridge
     internal sealed class ServerControlForm : TaskForm
     {
         private TextBox portTextBox;
+        private TextBox serverLogPathTextBox;
+        private TextBox serverOutputPathTextBox;
         private Button startButton;
         private Button stopButton;
         private Label statusLabel;
@@ -24,7 +26,7 @@ namespace SDVBridge
         private void InitializeComponent()
         {
             Text = "SDVBridge REST Server";
-            ClientSize = new Size(360, 150);
+            ClientSize = new Size(760, 210);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -44,10 +46,38 @@ namespace SDVBridge
                 Text = WebServerManager.Port.ToString()
             };
 
+            var serverLogPathLabel = new Label
+            {
+                Text = "Server Log Path:",
+                AutoSize = true,
+                Location = new Point(20, 55)
+            };
+
+            serverLogPathTextBox = new TextBox
+            {
+                Location = new Point(140, 51),
+                Width = 590,
+                Text = WebServerManager.DefaultServerLogPath ?? string.Empty
+            };
+
+            var serverOutputPathLabel = new Label
+            {
+                Text = "Server Output Path:",
+                AutoSize = true,
+                Location = new Point(20, 85)
+            };
+
+            serverOutputPathTextBox = new TextBox
+            {
+                Location = new Point(140, 81),
+                Width = 590,
+                Text = WebServerManager.DefaultServerOutputPath ?? string.Empty
+            };
+
             startButton = new Button
             {
                 Text = "Start",
-                Location = new Point(20, 60),
+                Location = new Point(20, 125),
                 Width = 100
             };
             startButton.Click += (_, __) => StartServer();
@@ -55,7 +85,7 @@ namespace SDVBridge
             stopButton = new Button
             {
                 Text = "Stop",
-                Location = new Point(140, 60),
+                Location = new Point(140, 125),
                 Width = 100
             };
             stopButton.Click += (_, __) => StopServer();
@@ -63,12 +93,16 @@ namespace SDVBridge
             statusLabel = new Label
             {
                 AutoSize = true,
-                Location = new Point(20, 105),
-                Width = 320
+                Location = new Point(20, 170),
+                Width = 720
             };
 
             Controls.Add(portLabel);
             Controls.Add(portTextBox);
+            Controls.Add(serverLogPathLabel);
+            Controls.Add(serverLogPathTextBox);
+            Controls.Add(serverOutputPathLabel);
+            Controls.Add(serverOutputPathTextBox);
             Controls.Add(startButton);
             Controls.Add(stopButton);
             Controls.Add(statusLabel);
@@ -91,8 +125,24 @@ namespace SDVBridge
                 return;
             }
 
+            var serverLogPath = string.IsNullOrWhiteSpace(serverLogPathTextBox.Text) ? null : serverLogPathTextBox.Text.Trim();
+            var serverOutputPath = string.IsNullOrWhiteSpace(serverOutputPathTextBox.Text) ? null : serverOutputPathTextBox.Text.Trim();
+            var hasLogPath = !string.IsNullOrWhiteSpace(serverLogPath);
+            var hasOutputPath = !string.IsNullOrWhiteSpace(serverOutputPath);
+            if (hasLogPath != hasOutputPath)
+            {
+                MessageBox.Show(
+                    this,
+                    "Server Log Path and Server Output Path must be provided together, or both left empty.",
+                    "SDVBridge",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
             try
             {
+                WebServerManager.SetDefaultCapturePaths(serverLogPath, serverOutputPath);
                 WebServerManager.Start(Consumer, port);
                 UpdateStatus();
             }
@@ -131,6 +181,9 @@ namespace SDVBridge
             bool running = WebServerManager.IsRunning;
             startButton.Enabled = !running;
             stopButton.Enabled = running;
+            portTextBox.Enabled = !running;
+            serverLogPathTextBox.Enabled = !running;
+            serverOutputPathTextBox.Enabled = !running;
         }
     }
 }

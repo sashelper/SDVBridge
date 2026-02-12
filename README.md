@@ -50,6 +50,22 @@ Running the SDVBridge REST server inside EG
    netsh http add urlacl url=http://127.0.0.1:17832/ user=%USERNAME%
    ```
 
+Server capture paths (recommended for remote SAS)
+-------------------------------------------------
+The control form includes two optional fields:
+- `Server Log Path`
+- `Server Output Path`
+
+When both are provided, SDVBridge writes SAS log/listing through `PROC PRINTTO` to those server-side files and downloads them back to local temp artifacts.
+
+Important requirements:
+- Provide both fields together (or leave both empty).
+- The SAS workspace account must have write permission to the parent folder.
+- Prefer absolute server paths that are valid on the SAS host.
+
+The two values are persisted and auto-loaded next time from:
+- `%APPDATA%\\SDVBridge\\settings.json`
+
 The server only binds to loopback, enables permissive CORS headers for local tools, and logs to `%TEMP%\SDVBridge\Logs\SDVBridge.log`. Dataset exports are written to `%TEMP%\SDVBridge\<server>\<libref>\<member>.sas7bdat`; delete those files when you are done.
 
 REST API overview

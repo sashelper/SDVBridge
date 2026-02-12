@@ -163,12 +163,18 @@ Content-Type: application/json
 
 {
   "server": "SASApp",
+  "serverlogpath": "/saswork/logs/sdvbridge_submit.log",
+  "serveroutputpath": "/saswork/logs/sdvbridge_submit.lst",
   "code": "proc print data=sashelp.class(obs=5); run;"
 }
 ```
 
 - `server`: optional; if omitted SDVBridge uses the consumer assigned/default server.
+- `serverlogpath`: optional; server-side path for captured SAS log.
+- `serveroutputpath`: optional; server-side path for captured SAS listing/output.
+  - `serverlogpath` and `serveroutputpath` must be provided together.
 - `code`: SAS program text to submit.
+- If the two server path fields are omitted, SDVBridge falls back to its automatic capture strategy.
 
 **Response**
 ```json
@@ -193,6 +199,8 @@ Content-Type: application/json
 
 {
   "server": "SASApp",
+  "serverlogpath": "/saswork/logs/sdvbridge_submit.log",
+  "serveroutputpath": "/saswork/logs/sdvbridge_submit.lst",
   "code": "proc means data=sashelp.class; var height weight; run;"
 }
 ```

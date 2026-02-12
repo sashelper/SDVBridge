@@ -137,6 +137,12 @@ namespace SDVBridge.Server
         [DataMember(Name = "server", EmitDefaultValue = false)]
         public string Server { get; set; }
 
+        [DataMember(Name = "serverlogpath", EmitDefaultValue = false)]
+        public string ServerLogPath { get; set; }
+
+        [DataMember(Name = "serveroutputpath", EmitDefaultValue = false)]
+        public string ServerOutputPath { get; set; }
+
         [DataMember(Name = "code")]
         public string Code { get; set; }
     }
