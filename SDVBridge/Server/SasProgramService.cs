@@ -104,6 +104,9 @@ namespace SDVBridge.Server
         private const string TempLogFileref = "_sdvlog";
         private const string TempOutputFileref = "_sdvlst";
         private const string SubmitSafetyPreamble = ";*';*\";*/;quit;run;";
+        private const int RequiredServerCaptureDownloadTimeoutMs = 8000;
+        private const int OptionalServerOutputDownloadTimeoutMs = 1000;
+        private const int ServerCaptureDownloadRetryIntervalMs = 250;
 
         private readonly EgInteropContext _context;
         private readonly object _syncRoot = new object();
@@ -1224,14 +1227,40 @@ namespace SDVBridge.Server
                 return;
             }
 
-            var logDownloaded = TryDownloadServerCaptureFile(server, captureFiles.SubmitLogPath, ".log", captureFiles.LogPath);
+            var logDownloaded = TryDownloadServerCaptureFile(
+                server,
+                captureFiles.SubmitLogPath,
+                ".log",
+                captureFiles.LogPath,
+                RequiredServerCaptureDownloadTimeoutMs,
+                true);
             Log($"Server log download {(logDownloaded ? "succeeded" : "failed")} for remote '{captureFiles.SubmitLogPath}'.");
 
-            var outputDownloaded = TryDownloadServerCaptureFile(server, captureFiles.SubmitOutputPath, ".lst", captureFiles.OutputPath);
-            Log($"Server output download {(outputDownloaded ? "succeeded" : "failed")} for remote '{captureFiles.SubmitOutputPath}'.");
+            // A submit can finish without producing listing output, so missing output should not hold completion open.
+            var outputDownloaded = TryDownloadServerCaptureFile(
+                server,
+                captureFiles.SubmitOutputPath,
+                ".lst",
+                captureFiles.OutputPath,
+                OptionalServerOutputDownloadTimeoutMs,
+                false);
+            if (outputDownloaded)
+            {
+                Log($"Server output download succeeded for remote '{captureFiles.SubmitOutputPath}'.");
+            }
+            else
+            {
+                Log($"Server output download was not available within {OptionalServerOutputDownloadTimeoutMs}ms for remote '{captureFiles.SubmitOutputPath}'. Proceeding without blocking completion.");
+            }
         }
 
-        private static bool TryDownloadServerCaptureFile(SasServer server, string remotePath, string extension, string localTargetPath)
+        private static bool TryDownloadServerCaptureFile(
+            SasServer server,
+            string remotePath,
+            string extension,
+            string localTargetPath,
+            int maxWaitMs,
+            bool allowEmptyFile)
         {
             if (server == null || string.IsNullOrWhiteSpace(remotePath) || string.IsNullOrWhiteSpace(localTargetPath))
             {
@@ -1248,9 +1277,11 @@ namespace SDVBridge.Server
                 ? ".tmp"
                 : (extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension);
 
-            var maxWait = DateTime.UtcNow.AddSeconds(8);
-            while (DateTime.UtcNow < maxWait)
+            var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, maxWaitMs));
+            var attempted = false;
+            while (!attempted || DateTime.UtcNow < deadline)
             {
+                attempted = true;
                 var copiedPath = string.Empty;
                 try
                 {
@@ -1281,21 +1312,48 @@ namespace SDVBridge.Server
                             File.Copy(copiedPath, localTargetPath, true);
                         }
 
-                        if (File.Exists(localTargetPath))
+                        if (IsCaptureFileReady(localTargetPath, allowEmptyFile))
                         {
                             return true;
                         }
                     }
                 }
-                else if (File.Exists(localTargetPath))
+                else if (IsCaptureFileReady(localTargetPath, allowEmptyFile))
                 {
                     return true;
                 }
 
-                Thread.Sleep(250);
+                if (DateTime.UtcNow >= deadline)
+                {
+                    break;
+                }
+
+                Thread.Sleep(ServerCaptureDownloadRetryIntervalMs);
             }
 
-            return File.Exists(localTargetPath);
+            return IsCaptureFileReady(localTargetPath, allowEmptyFile);
+        }
+
+        private static bool IsCaptureFileReady(string path, bool allowEmptyFile)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            if (allowEmptyFile)
+            {
+                return true;
+            }
+
+            try
+            {
+                return new FileInfo(path).Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private object InvokeSubmit(
