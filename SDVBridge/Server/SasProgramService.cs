@@ -106,6 +106,7 @@ namespace SDVBridge.Server
         private const string SubmitSafetyPreamble = ";*';*\";*/;quit;run;";
         private const int RequiredServerCaptureDownloadTimeoutMs = 8000;
         private const int OptionalServerOutputDownloadTimeoutMs = 1000;
+        private const int DeferredServerOutputDownloadTimeoutMs = 30000;
         private const int ServerCaptureDownloadRetryIntervalMs = 250;
 
         private readonly EgInteropContext _context;
@@ -370,6 +371,7 @@ namespace SDVBridge.Server
             object submitResult = null;
             SasServer captureServer = null;
             ProgramCaptureFiles captureFiles = null;
+            var deferredOutputQueued = false;
             try
             {
                 var code = request.Code ?? string.Empty;
@@ -417,7 +419,12 @@ namespace SDVBridge.Server
 
                 if (captureFiles.UsesServerCapture)
                 {
-                    DownloadServerCaptureFiles(captureFiles, captureServer);
+                    var outputHasContent = DownloadServerCaptureFiles(captureFiles, captureServer);
+                    if (!outputHasContent)
+                    {
+                        QueueDeferredOutputCapture(jobId, captureServer, captureFiles);
+                        deferredOutputQueued = true;
+                    }
                 }
                 PublishProgressFromFiles(jobId, captureFiles.LogPath, captureFiles.OutputPath);
                 var log = FirstNonEmpty(
@@ -445,7 +452,14 @@ namespace SDVBridge.Server
             {
                 if (captureFiles != null && captureFiles.UsesServerCapture)
                 {
-                    DownloadServerCaptureFiles(captureFiles, captureServer);
+                    var outputHasContent = DownloadServerCaptureFiles(captureFiles, captureServer);
+                    if (!outputHasContent)
+                    {
+                        if (!deferredOutputQueued)
+                        {
+                            QueueDeferredOutputCapture(jobId, captureServer, captureFiles);
+                        }
+                    }
                 }
                 PublishProgressFromFiles(
                     jobId,
@@ -1220,11 +1234,11 @@ namespace SDVBridge.Server
             return null;
         }
 
-        private static void DownloadServerCaptureFiles(ProgramCaptureFiles captureFiles, SasServer server)
+        private static bool DownloadServerCaptureFiles(ProgramCaptureFiles captureFiles, SasServer server)
         {
             if (captureFiles == null || !captureFiles.UsesServerCapture || server == null)
             {
-                return;
+                return true;
             }
 
             var logDownloaded = TryDownloadServerCaptureFile(
@@ -1236,22 +1250,29 @@ namespace SDVBridge.Server
                 true);
             Log($"Server log download {(logDownloaded ? "succeeded" : "failed")} for remote '{captureFiles.SubmitLogPath}'.");
 
-            // A submit can finish without producing listing output, so missing output should not hold completion open.
-            var outputDownloaded = TryDownloadServerCaptureFile(
+            // A submit can finish without producing listing output, and some servers expose a final empty .lst.
+            var outputReady = TryDownloadServerCaptureFile(
                 server,
                 captureFiles.SubmitOutputPath,
                 ".lst",
                 captureFiles.OutputPath,
                 OptionalServerOutputDownloadTimeoutMs,
-                false);
-            if (outputDownloaded)
+                true);
+            var outputHasContent = HasCaptureFileContent(captureFiles.OutputPath);
+            if (outputHasContent)
             {
                 Log($"Server output download succeeded for remote '{captureFiles.SubmitOutputPath}'.");
+            }
+            else if (outputReady)
+            {
+                Log($"Server output file is present but empty for remote '{captureFiles.SubmitOutputPath}'. Treating it as ready and continuing deferred refresh.");
             }
             else
             {
                 Log($"Server output download was not available within {OptionalServerOutputDownloadTimeoutMs}ms for remote '{captureFiles.SubmitOutputPath}'. Proceeding without blocking completion.");
             }
+
+            return outputHasContent;
         }
 
         private static bool TryDownloadServerCaptureFile(
@@ -1354,6 +1375,122 @@ namespace SDVBridge.Server
             {
                 return false;
             }
+        }
+
+        private static bool HasCaptureFileContent(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            try
+            {
+                return new FileInfo(path).Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void QueueDeferredOutputCapture(string jobId, SasServer server, ProgramCaptureFiles captureFiles)
+        {
+            if (string.IsNullOrWhiteSpace(jobId) || server == null || captureFiles == null)
+            {
+                return;
+            }
+
+            var serverName = FirstNonEmpty(server.Name, server.DisplayName);
+            if (string.IsNullOrWhiteSpace(serverName) ||
+                string.IsNullOrWhiteSpace(captureFiles.SubmitOutputPath) ||
+                string.IsNullOrWhiteSpace(captureFiles.OutputPath))
+            {
+                return;
+            }
+
+            var worker = new Thread(() => RunDeferredOutputCapture(jobId, serverName, captureFiles.SubmitOutputPath, captureFiles.OutputPath))
+            {
+                IsBackground = true,
+                Name = $"SDVBridgeDeferredOutput_{jobId}"
+            };
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.Start();
+        }
+
+        private void RunDeferredOutputCapture(string jobId, string serverName, string remoteOutputPath, string localOutputPath)
+        {
+            try
+            {
+                Log($"Deferred output capture started for job {jobId}: server='{serverName}', remote='{remoteOutputPath}'.");
+                var server = ResolveSasServer(serverName);
+                if (server == null)
+                {
+                    Log($"Deferred output capture skipped for job {jobId}: server '{serverName}' could not be resolved.");
+                    return;
+                }
+
+                var outputDownloaded = TryDownloadServerCaptureFile(
+                    server,
+                    remoteOutputPath,
+                    ".lst",
+                    localOutputPath,
+                    DeferredServerOutputDownloadTimeoutMs,
+                    false);
+                if (!outputDownloaded)
+                {
+                    Log($"Deferred output capture timed out for job {jobId} after {DeferredServerOutputDownloadTimeoutMs}ms.");
+                    return;
+                }
+
+                var output = TryReadFileText(localOutputPath);
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    Log($"Deferred output capture found no readable content for job {jobId}.");
+                    return;
+                }
+
+                var createdAt = UtcNow();
+                UpdateJob(jobId, record =>
+                {
+                    record.Output = output;
+                    var artifacts = record.Artifacts == null
+                        ? new List<ProgramArtifactRecord>()
+                        : record.Artifacts.Select(CloneArtifactRecord).ToList();
+
+                    if (!HasSyntheticOutputArtifact(artifacts))
+                    {
+                        var outputName = LooksLikeHtml(output) ? "output.html" : "output.txt";
+                        var outputType = LooksLikeHtml(output) ? "text/html" : "text/plain";
+                        var outputArtifact = WriteTextArtifact(CreateArtifactFolder(jobId), outputName, output, createdAt, outputType);
+                        if (outputArtifact != null)
+                        {
+                            artifacts.Add(outputArtifact);
+                        }
+                    }
+
+                    record.Artifacts = artifacts;
+                });
+
+                Log($"Deferred output capture succeeded for job {jobId}.");
+            }
+            catch (Exception ex)
+            {
+                Log($"Deferred output capture failed for job {jobId}: {ex.Message}");
+            }
+        }
+
+        private static bool HasSyntheticOutputArtifact(List<ProgramArtifactRecord> artifacts)
+        {
+            if (artifacts == null)
+            {
+                return false;
+            }
+
+            return artifacts.Any(a =>
+                a != null &&
+                (string.Equals(a.Name, "output.html", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(a.Name, "output.txt", StringComparison.OrdinalIgnoreCase)));
         }
 
         private object InvokeSubmit(
