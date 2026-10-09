@@ -4,6 +4,7 @@ public sealed class SasServerDto
 {
     public string Name { get; set; } = string.Empty;
     public bool IsAssigned { get; set; }
+    public bool IsDefault { get; set; }
 }
 
 public sealed class SasLibraryDto
@@ -40,6 +41,21 @@ public sealed class DatasetPreviewResponse
     public int RowCount { get; set; }
     public List<SasColumnDto> Columns { get; set; } = new();
     public List<Dictionary<string, string>> Rows { get; set; } = new();
+}
+
+public sealed class DatasetSizeResponse
+{
+    public string? Server { get; set; }
+    public string Libref { get; set; } = string.Empty;
+    public string Member { get; set; } = string.Empty;
+    public string? JobId { get; set; }
+    public bool Available { get; set; }
+    public long SizeBytes { get; set; }
+    public bool IsEstimate { get; set; }
+    public long Nobs { get; set; }
+    public long ObsLen { get; set; }
+    public int Nvar { get; set; }
+    public string? Source { get; set; }
 }
 
 public sealed class DatasetOpenRequest
@@ -116,4 +132,18 @@ public sealed class JobArtifactsResponse
     public string JobId { get; set; } = string.Empty;
     public string Status { get; set; } = "queued";
     public List<ProgramArtifactDto> Artifacts { get; set; } = new();
+}
+
+public sealed class DatasetJobResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public string Status { get; set; } = "queued";
+    public string? Server { get; set; }
+    public string? Libref { get; set; }
+    public string? Member { get; set; }
+    public long BytesDone { get; set; }
+    public long ElapsedMs { get; set; }
+    public string? Path { get; set; }
+    public string? FileName { get; set; }
+    public string? Error { get; set; }
 }

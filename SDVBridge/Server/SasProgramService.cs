@@ -386,6 +386,10 @@ namespace SDVBridge.Server
                     ? (_context.Consumer == null ? null : _context.Consumer.AssignedServer)
                     : request.Server;
                 captureServer = ResolveSasServer(preferredServerName);
+                if (captureServer == null && !string.IsNullOrWhiteSpace(request.Server))
+                {
+                    throw new InvalidOperationException($"Server '{request.Server}' was not found in Enterprise Guide.");
+                }
                 if (captureServer == null)
                 {
                     Log($"Capture server was not resolved for preferred server '{preferredServerName ?? "<null>"}'; falling back to local capture paths.");
@@ -1191,9 +1195,16 @@ namespace SDVBridge.Server
                     return servers[0];
                 }
 
-                return servers.FirstOrDefault(s => string.Equals(s.Name, preferredServerName, StringComparison.OrdinalIgnoreCase))
-                       ?? servers.FirstOrDefault(s => string.Equals(s.DisplayName, preferredServerName, StringComparison.OrdinalIgnoreCase))
-                       ?? servers[0];
+                // A named server that is not there is an error for the caller, never
+                // silently another server (with several servers that would capture the
+                // log on the wrong one).
+                var match = servers.FirstOrDefault(s => string.Equals(s.Name, preferredServerName, StringComparison.OrdinalIgnoreCase))
+                            ?? servers.FirstOrDefault(s => string.Equals(s.DisplayName, preferredServerName, StringComparison.OrdinalIgnoreCase));
+                if (match == null)
+                {
+                    Log($"ResolveSasServer: server '{preferredServerName}' was not found.");
+                }
+                return match;
             }
             catch (Exception ex)
             {
@@ -1500,9 +1511,14 @@ namespace SDVBridge.Server
             object consumer,
             Action<object, object, object> progressTick)
         {
+            var assignedServer = GetMemberValue(consumer, "AssignedServer") as string;
             var server = string.IsNullOrWhiteSpace(requestedServer)
-                ? (GetMemberValue(consumer, "AssignedServer") as string)
-                : requestedServer;
+                ? assignedServer
+                : requestedServer.Trim();
+            // A submit API without a server argument runs on the assigned server:
+            // another server must reach the call itself.
+            var mustPassServer = !string.IsNullOrWhiteSpace(requestedServer)
+                && !string.Equals(server, assignedServer == null ? null : assignedServer.Trim(), StringComparison.OrdinalIgnoreCase);
 
             Exception lastError = null;
             foreach (var target in new[] { submitter, consumer })
@@ -1512,7 +1528,7 @@ namespace SDVBridge.Server
                     continue;
                 }
 
-                if (TryInvokeSubmitOnTarget(target, code, server, consumer, progressTick, out var result, out var error))
+                if (TryInvokeSubmitOnTarget(target, code, server, consumer, progressTick, mustPassServer, out var result, out var error))
                 {
                     return result;
                 }
@@ -1523,6 +1539,17 @@ namespace SDVBridge.Server
                 }
             }
 
+            if (mustPassServer && lastError == null)
+            {
+                if (TrySubmitWithToolkitSubmitter(code, server, out var toolkitResult, out var toolkitError))
+                {
+                    return toolkitResult;
+                }
+
+                lastError = toolkitError ?? new InvalidOperationException(
+                    $"Enterprise Guide offers no submit API that takes a server; the program was not sent to '{server}'.");
+            }
+
             if (lastError != null)
             {
                 throw lastError;
@@ -1531,12 +1558,75 @@ namespace SDVBridge.Server
             throw new InvalidOperationException("Unable to find a submit API on the current EG consumer.");
         }
 
+        // SAS.Tasks.Toolkit.SasSubmitter is made for one server: the fallback when
+        // the consumer's submit API cannot be told which server to use.
+        private static bool TrySubmitWithToolkitSubmitter(string code, string server, out object result, out Exception error)
+        {
+            result = null;
+            error = null;
+            var submitterType = typeof(SasServer).Assembly.GetType("SAS.Tasks.Toolkit.SasSubmitter", false);
+            var constructor = submitterType == null ? null : submitterType.GetConstructor(new[] { typeof(string) });
+            var method = submitterType == null
+                ? null
+                : submitterType
+                    .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                    .FirstOrDefault(m =>
+                    {
+                        if (!string.Equals(m.Name, "SubmitSasProgramAndWait", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+
+                        var parameters = m.GetParameters();
+                        return parameters.Length == 2
+                            && parameters[0].ParameterType == typeof(string)
+                            && parameters[1].ParameterType == typeof(string).MakeByRefType();
+                    });
+            if (constructor == null || method == null)
+            {
+                Log("SAS.Tasks.Toolkit.SasSubmitter(string).SubmitSasProgramAndWait(string, out string) is not available.");
+                return false;
+            }
+
+            try
+            {
+                var submitter = constructor.Invoke(new object[] { server });
+                var args = new object[] { code ?? string.Empty, null };
+                var succeeded = method.Invoke(submitter, args);
+                result = new ToolkitSubmitResult
+                {
+                    Log = args[1] as string,
+                    Succeeded = succeeded is bool flag && flag
+                };
+                Log($"Submit API selected: SAS.Tasks.Toolkit.SasSubmitter('{server}').SubmitSasProgramAndWait, succeeded={succeeded}");
+                return true;
+            }
+            catch (TargetInvocationException ex)
+            {
+                error = ex.InnerException ?? ex;
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            return false;
+        }
+
+        private sealed class ToolkitSubmitResult
+        {
+            public string Log { get; set; }
+
+            public bool Succeeded { get; set; }
+        }
+
         private static bool TryInvokeSubmitOnTarget(
             object target,
             string code,
             string server,
             object consumer,
             Action<object, object, object> progressTick,
+            bool requireServerArgument,
             out object result,
             out Exception error)
         {
@@ -1552,8 +1642,14 @@ namespace SDVBridge.Server
 
             foreach (var method in methods)
             {
-                if (!TryBuildSubmitArgs(method, code, server, consumer, out var args))
+                if (!TryBuildSubmitArgs(method, code, server, consumer, out var args, out var passesServer))
                 {
+                    continue;
+                }
+
+                if (requireServerArgument && !passesServer)
+                {
+                    Log($"Submit API skipped (no server argument for '{server}'): {FormatMethodSignature(method)}");
                     continue;
                 }
 
@@ -1790,13 +1886,14 @@ namespace SDVBridge.Server
             string code,
             string server,
             object consumer,
-            out object[] args)
+            out object[] args,
+            out bool usedServer)
         {
             var parameters = method.GetParameters();
             args = new object[parameters.Length];
 
             var usedCode = false;
-            var usedServer = false;
+            usedServer = false;
             for (var i = 0; i < parameters.Length; i++)
             {
                 var parameter = parameters[i];

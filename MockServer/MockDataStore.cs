@@ -16,13 +16,14 @@ internal sealed class MockDataStore
     private readonly Dictionary<string, IReadOnlyList<SasLibraryDto>> _libraries;
     private readonly Dictionary<string, IReadOnlyList<SasDatasetDto>> _datasets;
     private readonly Dictionary<string, IReadOnlyList<SasColumnDto>> _columns;
+    private readonly Dictionary<string, DatasetSizeResponse> _sizes;
     private readonly ConcurrentDictionary<string, MockProgramJob> _jobs;
 
     public MockDataStore()
     {
         _servers = new List<SasServerDto>
         {
-            new() { Name = "SASApp", IsAssigned = true },
+            new() { Name = "SASApp", IsAssigned = true, IsDefault = true },
             new() { Name = "SASAppVA", IsAssigned = false }
         };
 
@@ -89,6 +90,75 @@ internal sealed class MockDataStore
             }
         };
 
+        _sizes = new Dictionary<string, DatasetSizeResponse>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Key("SASApp", "SASHELP", "CLASS")] = new()
+            {
+                Server = "SASApp",
+                Libref = "SASHELP",
+                Member = "CLASS",
+                Available = true,
+                SizeBytes = 131072,
+                IsEstimate = false,
+                Nobs = 19,
+                ObsLen = 40,
+                Nvar = 5,
+                Source = "dictionary.tables.filesize"
+            },
+            [Key("SASApp", "SASHELP", "CARS")] = new()
+            {
+                Server = "SASApp",
+                Libref = "SASHELP",
+                Member = "CARS",
+                Available = true,
+                SizeBytes = 196608,
+                IsEstimate = false,
+                Nobs = 428,
+                ObsLen = 184,
+                Nvar = 15,
+                Source = "dictionary.tables.filesize"
+            },
+            [Key("SASApp", "SASHELP", "FISH")] = new()
+            {
+                Server = "SASApp",
+                Libref = "SASHELP",
+                Member = "FISH",
+                Available = true,
+                SizeBytes = 15264,
+                IsEstimate = true,
+                Nobs = 159,
+                ObsLen = 96,
+                Nvar = 7,
+                Source = "dictionary.tables.nobs_obslen"
+            },
+            [Key("SASApp", "WORK", "TEMP_USERS")] = new()
+            {
+                Server = "SASApp",
+                Libref = "WORK",
+                Member = "TEMP_USERS",
+                Available = true,
+                SizeBytes = 8192,
+                IsEstimate = false,
+                Nobs = 20,
+                ObsLen = 80,
+                Nvar = 3,
+                Source = "dictionary.tables.filesize"
+            },
+            [Key("SASAppVA", "PUBLIC", "CUSTOMERS")] = new()
+            {
+                Server = "SASAppVA",
+                Libref = "PUBLIC",
+                Member = "CUSTOMERS",
+                Available = true,
+                SizeBytes = 262144,
+                IsEstimate = false,
+                Nobs = 1000,
+                ObsLen = 32,
+                Nvar = 3,
+                Source = "dictionary.tables.filesize"
+            }
+        };
+
         _jobs = new ConcurrentDictionary<string, MockProgramJob>(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -102,6 +172,40 @@ internal sealed class MockDataStore
 
     public bool TryGetColumns(string server, string libref, string member, out IReadOnlyList<SasColumnDto> columns)
         => _columns.TryGetValue(Key(server, libref, member), out columns!);
+
+    public bool TryGetSize(string server, string libref, string member, out DatasetSizeResponse response)
+    {
+        response = null!;
+        if (!TryGetDatasets(server, libref, out var datasets))
+        {
+            return false;
+        }
+
+        var dataset = datasets.FirstOrDefault(d => string.Equals(d.Member, member, StringComparison.OrdinalIgnoreCase));
+        if (dataset == null)
+        {
+            return false;
+        }
+
+        if (_sizes.TryGetValue(Key(server, libref, dataset.Member), out var size))
+        {
+            response = CloneSize(size);
+        }
+        else
+        {
+            response = new DatasetSizeResponse
+            {
+                Server = dataset.Server,
+                Libref = dataset.Libref,
+                Member = dataset.Member,
+                Available = false,
+                IsEstimate = false,
+                Source = "unavailable"
+            };
+        }
+
+        return true;
+    }
 
     public bool TryGetPreview(string server, string libref, string member, int limit, out DatasetPreviewResponse response)
     {
@@ -193,11 +297,29 @@ internal sealed class MockDataStore
         };
     }
 
+    // Like SDVBridge: no name = EG's default server; an unknown name is an
+    // error (never another server).
+    private string ResolveSubmitServer(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return (_servers.FirstOrDefault(s => s.IsDefault) ?? _servers[0]).Name;
+        }
+
+        var match = _servers.FirstOrDefault(s => string.Equals(s.Name, requested.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (match == null)
+        {
+            throw new InvalidOperationException($"Server '{requested}' was not found in Enterprise Guide.");
+        }
+
+        return match.Name;
+    }
+
     public ProgramSubmitResponse SubmitProgram(ProgramSubmitRequest request)
     {
         ValidateProgramRequest(request);
 
-        var server = string.IsNullOrWhiteSpace(request.Server) ? _servers[0].Name : request.Server!;
+        var server = ResolveSubmitServer(request.Server);
         var code = request.Code ?? string.Empty;
         var submittedAt = DateTimeOffset.UtcNow;
         var submittedAtText = submittedAt.ToString("o");
@@ -233,7 +355,7 @@ internal sealed class MockDataStore
     {
         ValidateProgramRequest(request);
 
-        var server = string.IsNullOrWhiteSpace(request.Server) ? _servers[0].Name : request.Server!;
+        var server = ResolveSubmitServer(request.Server);
         var code = request.Code ?? string.Empty;
         var submittedAt = DateTimeOffset.UtcNow.ToString("o");
         var jobId = Guid.NewGuid().ToString("N");
@@ -460,6 +582,40 @@ internal sealed class MockDataStore
         });
     }
 
+    // A one-page PDF that viewers (SDV's pdfium) really open, with the cross
+    // reference table's offsets computed.
+    private static byte[] BuildMockPdf(string text)
+    {
+        var escaped = text.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
+        var content = $"BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET";
+        var objects = new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            $"<< /Length {Encoding.ASCII.GetByteCount(content)} >>\nstream\n{content}\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+        };
+
+        var pdf = new StringBuilder("%PDF-1.4\n");
+        var offsets = new List<int>();
+        for (var i = 0; i < objects.Length; i++)
+        {
+            offsets.Add(Encoding.ASCII.GetByteCount(pdf.ToString()));
+            pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n");
+        }
+
+        var xref = Encoding.ASCII.GetByteCount(pdf.ToString());
+        pdf.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        foreach (var offset in offsets)
+        {
+            pdf.Append($"{offset:D10} 00000 n \n");
+        }
+
+        pdf.Append($"trailer\n<< /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        return Encoding.ASCII.GetBytes(pdf.ToString());
+    }
+
     private static List<ProgramArtifactDto> CreateMockArtifacts(string jobId, string server, string output, string createdAt)
     {
         var folder = Path.Combine(Path.GetTempPath(), "SDVBridge", "Jobs", SanitizeSegment(jobId), "Artifacts");
@@ -470,7 +626,7 @@ internal sealed class MockDataStore
         File.WriteAllText(htmlPath, html, Encoding.UTF8);
 
         var pdfPath = Path.Combine(folder, "result.pdf");
-        File.WriteAllBytes(pdfPath, Encoding.UTF8.GetBytes($"%PDF-1.4\n%Mock artifact for {server}\n"));
+        File.WriteAllBytes(pdfPath, BuildMockPdf($"Mock artifact for {server}"));
 
         var xlsxPath = Path.Combine(folder, "result.xlsx");
         File.WriteAllBytes(xlsxPath, Encoding.UTF8.GetBytes("PK\u0003\u0004MOCKXLSX"));
@@ -560,6 +716,24 @@ internal sealed class MockDataStore
             ContentType = source.ContentType,
             SizeBytes = source.SizeBytes,
             CreatedAt = source.CreatedAt
+        };
+    }
+
+    private static DatasetSizeResponse CloneSize(DatasetSizeResponse source)
+    {
+        return new DatasetSizeResponse
+        {
+            Server = source.Server,
+            Libref = source.Libref,
+            Member = source.Member,
+            JobId = source.JobId,
+            Available = source.Available,
+            SizeBytes = source.SizeBytes,
+            IsEstimate = source.IsEstimate,
+            Nobs = source.Nobs,
+            ObsLen = source.ObsLen,
+            Nvar = source.Nvar,
+            Source = source.Source
         };
     }
 

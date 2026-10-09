@@ -37,10 +37,16 @@ curl http://127.0.0.1:17832/servers
 **Response**
 ```json
 [
-  { "name": "SASApp", "isassigned": true },
-  { "name": "SASAppVA", "isassigned": false }
+  { "name": "SASApp", "isassigned": true, "isdefault": true },
+  { "name": "SASAppVA", "isassigned": false, "isdefault": false }
 ]
 ```
+
+- `isassigned`: whether EG has the server connected; omitted when this EG version does not expose it (do not read a missing value as "not assigned").
+- `isdefault`: the server EG submits to when a request names none (the task's assigned server, else the first one). Exactly one server has it.
+- `displayname`: only when it differs from `name`.
+
+Every endpoint that takes a server name answers an error for a name EG does not know; it never falls back to another server.
 
 ### GET /servers/{server}/libraries
 Lists libraries on the specified server.
@@ -89,6 +95,35 @@ curl http://127.0.0.1:17832/servers/SASApp/libraries/SASHELP/datasets/CLASS/colu
   { "name": "Age", "label": "Age", "type": "Numeric", "length": 8, "format": "BEST12.", "informat": "BEST12." }
 ]
 ```
+
+### GET /servers/{server}/libraries/{libref}/datasets/{member}/size
+Returns dataset size metadata before downloading the `.sas7bdat` file. The service reads SAS metadata only; it does not download the dataset.
+
+**Request**
+```
+curl http://127.0.0.1:17832/servers/SASApp/libraries/SASHELP/datasets/CLASS/size
+```
+
+**Response**
+```json
+{
+  "server": "SASApp",
+  "libref": "SASHELP",
+  "member": "CLASS",
+  "jobid": "7c5cd4d853814e65b8825386436e18f7",
+  "available": true,
+  "sizebytes": 131072,
+  "isestimate": false,
+  "nobs": 19,
+  "obslen": 40,
+  "nvar": 5,
+  "source": "dictionary.tables.filesize"
+}
+```
+
+- `sizebytes` is taken from `dictionary.tables.filesize` when SAS provides it.
+- If `filesize` is missing but `nobs` and `obslen` are available, `sizebytes` is estimated as `nobs * obslen` and `isestimate` is `true`.
+- `available=false` means SAS metadata did not provide enough information to determine a size.
 
 ### GET /servers/{server}/libraries/{libref}/datasets/{member}/preview
 Returns a tabular preview for a dataset by running a short SAS program and parsing preview rows from the log.
@@ -153,6 +188,37 @@ Content-Type: application/json; charset=utf-8
 
 Delete exported files when you are done with them. Subsequent calls reuse the same server/libref folders and overwrite the `member.sas7bdat` file.
 
+The transfer runs on a background worker thread, so Enterprise Guide stays responsive, but this call only returns when the whole data set is local. For large data sets use the job form below.
+
+### POST /datasets/open/async
+Queues the same download as a job and returns at once (`202 Accepted`). Downloads run one at a time, each into its own folder `%TEMP%\SDVBridge\<server>\<libref>\jobs\<jobid>\` (an older copy of the same data set is removed once a newer one is complete, unless the file is still in use).
+
+**Request**: same body as `/datasets/open`.
+
+**Response**
+```json
+{ "jobid": "6f0c…", "status": "queued", "server": "SASApp", "libref": "SASHELP", "member": "CLASS", "bytesdone": 0, "elapsedms": 0 }
+```
+
+### GET /datasets/jobs/{jobid}
+Status of a download job.
+
+```json
+{
+  "jobid": "6f0c…",
+  "status": "running",
+  "bytesdone": 734003200,
+  "elapsedms": 41250
+}
+```
+
+- `status`: `queued`, `running`, `completed`, `failed` or `cancelled`.
+- `bytesdone`: bytes written to the local file so far (stays 0 if the transfer writes the file only at the end). Combine with `GET …/size` for a percentage.
+- When `completed`: `path` and `filename` as from `/datasets/open`. When `failed`: `error`.
+
+### POST /datasets/jobs/{jobid}/cancel
+Cancels a download job and returns its status (`cancelled`). A queued job never starts. A running transfer (`SasData.DownloadToFolder`) cannot be interrupted: the client is released immediately and the file is deleted when the transfer ends.
+
 ### POST /programs/submit
 Submits SAS code via the active EG session and returns a job id.
 
@@ -169,7 +235,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-- `server`: optional; if omitted SDVBridge uses the consumer assigned/default server.
+- `server`: optional; if omitted SDVBridge uses the consumer assigned/default server (the one `GET /servers` marks `isdefault`). A name Enterprise Guide does not list is an error (`400`, "Server 'X' was not found in Enterprise Guide.") — the program is never sent to another server.
 - `serverlogpath`: optional; server-side path for captured SAS log.
 - `serveroutputpath`: optional; server-side path for captured SAS listing/output.
   - `serverlogpath` and `serveroutputpath` must be provided together.
@@ -341,8 +407,9 @@ Dataset browse/download:
 2. `GET /servers/{server}/libraries` → pick libref.
 3. `GET /servers/{server}/libraries/{libref}/datasets` → pick dataset.
 4. `GET /servers/{server}/libraries/{libref}/datasets/{member}/columns` (optional, inspect schema first).
-5. `GET /servers/{server}/libraries/{libref}/datasets/{member}/preview?limit=20` (optional, inspect sample rows).
-6. `POST /datasets/open` to create a `.sas7bdat` copy and retrieve its local file path.
+5. `GET /servers/{server}/libraries/{libref}/datasets/{member}/size` (optional, check download size before exporting).
+6. `GET /servers/{server}/libraries/{libref}/datasets/{member}/preview?limit=20` (optional, inspect sample rows).
+7. `POST /datasets/open` to create a `.sas7bdat` copy and retrieve its local file path (or `POST /datasets/open/async`, then poll `GET /datasets/jobs/{jobid}` for large data sets).
 
 Program execution:
 1. `POST /programs/submit/async` with SAS code.

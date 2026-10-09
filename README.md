@@ -78,6 +78,7 @@ Endpoint | Description
 `GET /servers/{server}/libraries` | Lists libraries (assigning them if necessary).
 `GET /servers/{server}/libraries/{libref}/datasets` | Lists datasets within a library.
 `GET /servers/{server}/libraries/{libref}/datasets/{member}/columns` | Lists columns for a dataset (name/label/type/length/format/informat).
+`GET /servers/{server}/libraries/{libref}/datasets/{member}/size` | Returns dataset size metadata before download (`sizebytes`, `nobs`, `obslen`, `nvar`, and whether the size is estimated).
 `GET /servers/{server}/libraries/{libref}/datasets/{member}/preview?limit=20` | Returns tabular preview rows (up to `limit`, default 20, max 500).
 `POST /datasets/open` | Body: `{"server":"SASApp","libref":"SASHELP","member":"CLASS"}`. Downloads the dataset to `%TEMP%\SDVBridge`, keeps the native member name, and returns `{ "path": "C:\\...\\CLASS.sas7bdat", "filename": "CLASS.sas7bdat" }`.
 `POST /programs/submit` | Body: `{"server":"SASApp","code":"proc print data=sashelp.class(obs=5); run;"}`. Submits SAS code and returns a job id + status.

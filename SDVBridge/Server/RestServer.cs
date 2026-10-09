@@ -13,8 +13,10 @@ namespace SDVBridge.Server
         private readonly EgInteropContext _context;
         private readonly SasMetadataService _metadataService;
         private readonly SasDatasetExporter _exporter;
+        private readonly DatasetDownloadService _downloads;
         private readonly SasProgramService _programService;
         private readonly SasDatasetPreviewService _previewService;
+        private readonly SasDatasetSizeService _sizeService;
         private readonly HttpListener _listener;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private Task _loop;
@@ -24,8 +26,10 @@ namespace SDVBridge.Server
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _metadataService = new SasMetadataService(context);
             _exporter = new SasDatasetExporter(context);
+            _downloads = new DatasetDownloadService(_exporter);
             _programService = new SasProgramService(context);
             _previewService = new SasDatasetPreviewService(_metadataService, _programService);
+            _sizeService = new SasDatasetSizeService(_programService);
             Port = port;
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
@@ -123,6 +127,19 @@ namespace SDVBridge.Server
                          string.Equals(rawSegments[0], "servers", StringComparison.OrdinalIgnoreCase) &&
                          string.Equals(rawSegments[2], "libraries", StringComparison.OrdinalIgnoreCase) &&
                          string.Equals(rawSegments[4], "datasets", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[6], "size", StringComparison.OrdinalIgnoreCase))
+                {
+                    var serverName = WebUtility.UrlDecode(rawSegments[1]);
+                    var libref = WebUtility.UrlDecode(rawSegments[3]);
+                    var member = WebUtility.UrlDecode(rawSegments[5]);
+                    var size = await _sizeService.GetSizeAsync(serverName, libref, member).ConfigureAwait(false);
+                    WriteJson(ctx.Response, HttpStatusCode.OK, size);
+                }
+                else if (ctx.Request.HttpMethod == "GET" &&
+                         rawSegments.Length == 7 &&
+                         string.Equals(rawSegments[0], "servers", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[2], "libraries", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[4], "datasets", StringComparison.OrdinalIgnoreCase) &&
                          string.Equals(rawSegments[6], "preview", StringComparison.OrdinalIgnoreCase))
                 {
                     var serverName = WebUtility.UrlDecode(rawSegments[1]);
@@ -150,6 +167,52 @@ namespace SDVBridge.Server
                         Path = result.LocalPath,
                         FileName = result.FileName
                     });
+                }
+                else if (ctx.Request.HttpMethod == "POST" && path == "datasets/open/async")
+                {
+                    // Large downloads: queue a job the client polls (EG stays responsive).
+                    var payload = await ReadRequestBodyAsync(ctx.Request).ConfigureAwait(false);
+                    LogInfo($"/datasets/open/async request body: {payload}");
+
+                    var request = JsonUtil.Deserialize<DatasetOpenRequest>(payload ?? string.Empty);
+                    if (request == null)
+                    {
+                        throw new InvalidOperationException("Request body is required.");
+                    }
+
+                    var job = _downloads.Queue(request);
+                    WriteJson(ctx.Response, HttpStatusCode.Accepted, job);
+                }
+                else if (ctx.Request.HttpMethod == "GET" &&
+                         rawSegments.Length == 3 &&
+                         string.Equals(rawSegments[0], "datasets", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[1], "jobs", StringComparison.OrdinalIgnoreCase))
+                {
+                    var jobId = WebUtility.UrlDecode(rawSegments[2]);
+                    if (!_downloads.TryGetStatus(jobId, out var job))
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.NotFound, new ErrorResponse($"Download job '{jobId}' was not found."));
+                    }
+                    else
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.OK, job);
+                    }
+                }
+                else if (ctx.Request.HttpMethod == "POST" &&
+                         rawSegments.Length == 4 &&
+                         string.Equals(rawSegments[0], "datasets", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[1], "jobs", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[3], "cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    var jobId = WebUtility.UrlDecode(rawSegments[2]);
+                    if (!_downloads.TryCancel(jobId, out var job))
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.NotFound, new ErrorResponse($"Download job '{jobId}' was not found."));
+                    }
+                    else
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.OK, job);
+                    }
                 }
                 else if (ctx.Request.HttpMethod == "POST" && path == "programs/submit")
                 {

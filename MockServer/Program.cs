@@ -21,6 +21,7 @@ app.Urls.Clear();
 app.Urls.Add($"http://127.0.0.1:{port}");
 
 var store = new MockDataStore();
+var downloads = new MockDownloads(store);
 
 app.MapGet("/servers", () => Results.Json(store.GetServers()));
 
@@ -54,6 +55,16 @@ app.MapGet("/servers/{server}/libraries/{libref}/datasets/{member}/columns", (st
     return Results.Json(columns);
 });
 
+app.MapGet("/servers/{server}/libraries/{libref}/datasets/{member}/size", (string server, string libref, string member) =>
+{
+    if (!store.TryGetSize(server, libref, member, out var size))
+    {
+        return Results.NotFound(new { error = $"No size metadata found for {server}/{libref}/{member}." });
+    }
+
+    return Results.Json(size);
+});
+
 app.MapGet("/servers/{server}/libraries/{libref}/datasets/{member}/preview", (string server, string libref, string member, HttpRequest request) =>
 {
     var limit = int.TryParse(request.Query["limit"], out var parsedLimit) ? parsedLimit : 0;
@@ -82,6 +93,33 @@ app.MapPost("/datasets/open", (DatasetOpenRequest? request) =>
         return Results.BadRequest(new { error = ex.Message });
     }
 });
+
+app.MapPost("/datasets/open/async", (DatasetOpenRequest? request) =>
+{
+    if (request == null)
+    {
+        return Results.BadRequest(new { error = "Request body is required." });
+    }
+
+    try
+    {
+        return Results.Json(downloads.Queue(request), statusCode: StatusCodes.Status202Accepted);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/datasets/jobs/{jobId}", (string jobId) =>
+    downloads.TryGet(jobId, out var job)
+        ? Results.Json(job)
+        : Results.NotFound(new { error = $"Download job '{jobId}' was not found." }));
+
+app.MapPost("/datasets/jobs/{jobId}/cancel", (string jobId) =>
+    downloads.TryCancel(jobId, out var job)
+        ? Results.Json(job)
+        : Results.NotFound(new { error = $"Download job '{jobId}' was not found." }));
 
 app.MapPost("/programs/submit", (ProgramSubmitRequest? request) =>
 {
@@ -182,6 +220,7 @@ app.MapGet("/", () => Results.Json(new
         "/servers/{server}/libraries",
         "/servers/{server}/libraries/{libref}/datasets",
         "/servers/{server}/libraries/{libref}/datasets/{member}/columns",
+        "/servers/{server}/libraries/{libref}/datasets/{member}/size",
         "/servers/{server}/libraries/{libref}/datasets/{member}/preview",
         "/datasets/open",
         "/programs/submit",

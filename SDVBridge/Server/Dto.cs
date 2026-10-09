@@ -9,8 +9,17 @@ namespace SDVBridge.Server
         [DataMember(Name = "name")]
         public string Name { get; set; }
 
-        [DataMember(Name = "isassigned")]
-        public bool IsAssigned { get; set; }
+        [DataMember(Name = "displayname", EmitDefaultValue = false)]
+        public string DisplayName { get; set; }
+
+        // Whether EG has the server connected / assigned; omitted when EG does
+        // not tell (clients must not read a missing value as "not assigned").
+        [DataMember(Name = "isassigned", EmitDefaultValue = false)]
+        public bool? IsAssigned { get; set; }
+
+        // The server EG submits to by default (the task consumer's assigned server).
+        [DataMember(Name = "isdefault")]
+        public bool IsDefault { get; set; }
     }
 
     [DataContract]
@@ -90,6 +99,43 @@ namespace SDVBridge.Server
     }
 
     [DataContract]
+    internal sealed class DatasetSizeResponse
+    {
+        [DataMember(Name = "server", EmitDefaultValue = false)]
+        public string Server { get; set; }
+
+        [DataMember(Name = "libref")]
+        public string Libref { get; set; }
+
+        [DataMember(Name = "member")]
+        public string Member { get; set; }
+
+        [DataMember(Name = "jobid", EmitDefaultValue = false)]
+        public string JobId { get; set; }
+
+        [DataMember(Name = "available")]
+        public bool Available { get; set; }
+
+        [DataMember(Name = "sizebytes")]
+        public long SizeBytes { get; set; }
+
+        [DataMember(Name = "isestimate")]
+        public bool IsEstimate { get; set; }
+
+        [DataMember(Name = "nobs")]
+        public long Nobs { get; set; }
+
+        [DataMember(Name = "obslen")]
+        public long ObsLen { get; set; }
+
+        [DataMember(Name = "nvar")]
+        public int Nvar { get; set; }
+
+        [DataMember(Name = "source", EmitDefaultValue = false)]
+        public string Source { get; set; }
+    }
+
+    [DataContract]
     internal sealed class DatasetOpenRequest
     {
         [DataMember(Name = "server", EmitDefaultValue = false)]
@@ -129,6 +175,42 @@ namespace SDVBridge.Server
 
         [DataMember(Name = "filename")]
         public string FileName { get; set; }
+    }
+
+    [DataContract]
+    internal sealed class DatasetJobResponse
+    {
+        [DataMember(Name = "jobid")]
+        public string JobId { get; set; }
+
+        // queued | running | completed | failed | cancelled
+        [DataMember(Name = "status")]
+        public string Status { get; set; }
+
+        [DataMember(Name = "server", EmitDefaultValue = false)]
+        public string Server { get; set; }
+
+        [DataMember(Name = "libref", EmitDefaultValue = false)]
+        public string Libref { get; set; }
+
+        [DataMember(Name = "member", EmitDefaultValue = false)]
+        public string Member { get; set; }
+
+        // Bytes written to the local file so far (0 when the transfer gives no progress).
+        [DataMember(Name = "bytesdone")]
+        public long BytesDone { get; set; }
+
+        [DataMember(Name = "elapsedms")]
+        public long ElapsedMs { get; set; }
+
+        [DataMember(Name = "path", EmitDefaultValue = false)]
+        public string Path { get; set; }
+
+        [DataMember(Name = "filename", EmitDefaultValue = false)]
+        public string FileName { get; set; }
+
+        [DataMember(Name = "error", EmitDefaultValue = false)]
+        public string Error { get; set; }
     }
 
     [DataContract]

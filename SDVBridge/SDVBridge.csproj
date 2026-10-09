@@ -73,12 +73,14 @@
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="Interop\EgInteropContext.cs" />
+    <Compile Include="Server\DatasetDownloadService.cs" />
     <Compile Include="Server\Dto.cs" />
     <Compile Include="Server\JsonUtil.cs" />
     <Compile Include="Server\SDVBridgeLog.cs" />
     <Compile Include="Server\RestServer.cs" />
     <Compile Include="Server\SasDatasetExporter.cs" />
     <Compile Include="Server\SasDatasetPreviewService.cs" />
+    <Compile Include="Server\SasDatasetSizeService.cs" />
     <Compile Include="Server\SasProgramService.cs" />
     <Compile Include="Server\SasMetadataService.cs" />
     <Compile Include="Server\WebServerManager.cs" />

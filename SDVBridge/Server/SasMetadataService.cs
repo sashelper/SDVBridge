@@ -24,13 +24,24 @@ namespace SDVBridge.Server
             return _context.RunOnUiAsync(() =>
             {
                 var servers = SasServer.GetSasServers();
-                return servers
+                var defaultName = _context.Consumer == null ? null : _context.Consumer.AssignedServer;
+                var list = servers
                     .Select(s => new SasServerDto
                     {
                         Name = s.Name,
-                        IsAssigned = false
+                        DisplayName = string.Equals(s.DisplayName, s.Name, StringComparison.Ordinal) ? null : s.DisplayName,
+                        IsAssigned = ReadConnectionState(s),
+                        IsDefault = !string.IsNullOrWhiteSpace(defaultName)
+                                    && (string.Equals(s.Name, defaultName, StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(s.DisplayName, defaultName, StringComparison.OrdinalIgnoreCase))
                     })
-                    .ToList() as IList<SasServerDto>;
+                    .ToList();
+                // Without an assigned server EG submits to the first one.
+                if (list.Count > 0 && !list.Any(s => s.IsDefault))
+                {
+                    list[0].IsDefault = true;
+                }
+                return list as IList<SasServerDto>;
             });
         }
 
@@ -309,6 +320,29 @@ namespace SDVBridge.Server
             }
 
             return library.GetSasDataMembers();
+        }
+
+        // The Toolkit's SasServer exposes its connection state under different names
+        // across EG versions; read whichever is there. Only plain state properties are
+        // read (never anything that would connect). null = EG does not say.
+        private static bool? ReadConnectionState(SasServer server)
+        {
+            foreach (var name in new[] { "IsAssigned", "IsConnected", "Connected" })
+            {
+                try
+                {
+                    var property = server.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+                    if (property != null && property.PropertyType == typeof(bool) && property.GetIndexParameters().Length == 0)
+                    {
+                        return (bool)property.GetValue(server, null);
+                    }
+                }
+                catch
+                {
+                    // Not readable here: try the next name.
+                }
+            }
+            return null;
         }
 
         private static SasServer FindServer(string serverName)
