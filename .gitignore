@@ -4,10 +4,4 @@
 /SDVBridge/obj
 /MockServer/obj
 /MockServer/bin
-SDVBridge/SAS.Shared.AddIns.dll
-SDVBridge/SAS.Tasks.Toolkit.dll
-
-# Local reference docs (SAS EG guide, Toolkit CHM) and a saved API response
-/docs/*.pdf
-*.chm
 /result.html
