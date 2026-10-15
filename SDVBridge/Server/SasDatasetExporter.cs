@@ -89,7 +89,7 @@ namespace SDVBridge.Server
             worker.Start();
         }
 
-        private static bool IsWrongThread(Exception ex)
+        internal static bool IsWrongThread(Exception ex)
         {
             var com = ex as COMException;
             if (com != null && com.HResult == RpcEWrongThread)

@@ -331,7 +331,7 @@ namespace SDVBridge.Server
                 ProgramExecutionResult execution;
                 try
                 {
-                    execution = await _context.RunOnUiAsync(() => ExecuteSubmitCore(request, jobId)).ConfigureAwait(false);
+                    execution = await RunOnWorkerAsync(jobId, () => ExecuteSubmitCore(request, jobId)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -365,6 +365,47 @@ namespace SDVBridge.Server
             }
         }
 
+        /// <summary>
+        /// Runs a submit on a dedicated STA worker thread (the pattern of SasDatasetExporter).
+        /// It used to run on Enterprise Guide's UI thread (RunOnUiAsync), which froze EG for as
+        /// long as the SAS program ran.
+        /// </summary>
+        private static Task<ProgramExecutionResult> RunOnWorkerAsync(string jobId, Func<ProgramExecutionResult> body)
+        {
+            // Continuations run on the thread pool, so the worker thread ends with the submit.
+            var tcs = new TaskCompletionSource<ProgramExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            SasDatasetExporter.StartWorker("SDVBridgeSubmit_" + jobId, () =>
+            {
+                try
+                {
+                    tcs.SetResult(body());
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            });
+            return tcs.Task;
+        }
+
+        /// <summary>
+        /// Makes one submit API call on the current (worker) thread. When EG refuses a call from
+        /// it, the call alone is repeated on EG's UI thread, which is then busy until SAS is done.
+        /// </summary>
+        private object CallSubmitApi(Func<object> call)
+        {
+            try
+            {
+                return call();
+            }
+            catch (Exception ex) when (SasDatasetExporter.IsWrongThread(ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex))
+            {
+                Log($"EG refused the submit from the worker thread ({(ex.InnerException ?? ex).Message}); submitting on the UI thread (EG will be busy meanwhile).");
+                return _context.RunOnUiAsync(call).GetAwaiter().GetResult();
+            }
+        }
+
+        // Runs on a worker thread: see RunOnWorkerAsync.
         private ProgramExecutionResult ExecuteSubmitCore(ProgramSubmitRequest request, string jobId)
         {
             object submitter = null;
@@ -375,7 +416,13 @@ namespace SDVBridge.Server
             try
             {
                 var code = request.Code ?? string.Empty;
-                submitter = GetMemberValue(_context.Consumer, "Submit");
+                // Quick reads of EG's own objects stay on its UI thread.
+                var egState = _context.RunOnUiAsync(() => new
+                {
+                    Submitter = GetMemberValue(_context.Consumer, "Submit"),
+                    AssignedServer = _context.Consumer == null ? null : _context.Consumer.AssignedServer
+                }).GetAwaiter().GetResult();
+                submitter = egState.Submitter;
                 var configuredServerLogPath = FirstNonEmpty(
                     NormalizeOptionalPath(request.ServerLogPath),
                     NormalizeOptionalPath(WebServerManager.DefaultServerLogPath));
@@ -383,7 +430,7 @@ namespace SDVBridge.Server
                     NormalizeOptionalPath(request.ServerOutputPath),
                     NormalizeOptionalPath(WebServerManager.DefaultServerOutputPath));
                 var preferredServerName = string.IsNullOrWhiteSpace(request.Server)
-                    ? (_context.Consumer == null ? null : _context.Consumer.AssignedServer)
+                    ? egState.AssignedServer
                     : request.Server;
                 captureServer = ResolveSasServer(preferredServerName);
                 if (captureServer == null && !string.IsNullOrWhiteSpace(request.Server))
@@ -413,6 +460,7 @@ namespace SDVBridge.Server
                 submitResult = InvokeSubmit(
                     submitCode,
                     request.Server,
+                    egState.AssignedServer,
                     submitter,
                     _context.Consumer,
                     (result, submitTarget, consumerTarget) =>
@@ -1507,11 +1555,11 @@ namespace SDVBridge.Server
         private object InvokeSubmit(
             string code,
             string requestedServer,
+            string assignedServer,
             object submitter,
             object consumer,
             Action<object, object, object> progressTick)
         {
-            var assignedServer = GetMemberValue(consumer, "AssignedServer") as string;
             var server = string.IsNullOrWhiteSpace(requestedServer)
                 ? assignedServer
                 : requestedServer.Trim();
@@ -1560,7 +1608,7 @@ namespace SDVBridge.Server
 
         // SAS.Tasks.Toolkit.SasSubmitter is made for one server: the fallback when
         // the consumer's submit API cannot be told which server to use.
-        private static bool TrySubmitWithToolkitSubmitter(string code, string server, out object result, out Exception error)
+        private bool TrySubmitWithToolkitSubmitter(string code, string server, out object result, out Exception error)
         {
             result = null;
             error = null;
@@ -1592,7 +1640,7 @@ namespace SDVBridge.Server
             {
                 var submitter = constructor.Invoke(new object[] { server });
                 var args = new object[] { code ?? string.Empty, null };
-                var succeeded = method.Invoke(submitter, args);
+                var succeeded = CallSubmitApi(() => method.Invoke(submitter, args));
                 result = new ToolkitSubmitResult
                 {
                     Log = args[1] as string,
@@ -1620,7 +1668,7 @@ namespace SDVBridge.Server
             public bool Succeeded { get; set; }
         }
 
-        private static bool TryInvokeSubmitOnTarget(
+        private bool TryInvokeSubmitOnTarget(
             object target,
             string code,
             string server,
@@ -1655,7 +1703,7 @@ namespace SDVBridge.Server
 
                 try
                 {
-                    result = method.Invoke(target, args);
+                    result = CallSubmitApi(() => method.Invoke(target, args));
                     Log($"Submit API selected: targetType={target.GetType().FullName}, method={FormatMethodSignature(method)}, resultType={(result == null ? "<null>" : result.GetType().FullName)}");
                     WaitForSubmitCompletion(target, consumer, method, result, progressTick);
 
