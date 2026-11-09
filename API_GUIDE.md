@@ -242,6 +242,8 @@ Content-Type: application/json; charset=utf-8
 - `code`: SAS program text to submit.
 - If the two server path fields are omitted, SDVBridge falls back to its automatic capture strategy.
 
+SDVBridge sends the code between two copies of Enterprise Guide's safety string `;*';*";*/;quit;run;`, as Enterprise Guide does with its own programs. The one after the code closes a quote, double quote or `/*` comment the code left open and ends a pending step, so the capture code that follows still runs and the SAS session is not left waiting inside a string; the one before it recovers from a session left in that state by something else. As in Enterprise Guide, an interactive procedure (PROC SQL, PROC DATASETS, PROC IML and the like) does not stay open from one submit to the next. An unclosed `%macro` definition is not repaired.
+
 **Response**
 ```json
 {

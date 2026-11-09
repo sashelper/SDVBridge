@@ -103,7 +103,13 @@ namespace SDVBridge.Server
 
         private const string TempLogFileref = "_sdvlog";
         private const string TempOutputFileref = "_sdvlst";
-        private const string SubmitSafetyPreamble = ";*';*\";*/;quit;run;";
+        // Enterprise Guide's own "magic string": it closes a quote, a double quote or a
+        // /* comment that the code left open and ends a pending step. It goes before the
+        // code (a session left in such a state by something else) and right after it, as
+        // EG does: without it, a program with an unclosed quote swallows the wrapper's
+        // "proc printto;" and leaves the session waiting inside the string, so the submit
+        // may never return and every later job queues behind it.
+        private const string SubmitSafetyString = ";*';*\";*/;quit;run;";
         private const int RequiredServerCaptureDownloadTimeoutMs = 8000;
         private const int OptionalServerOutputDownloadTimeoutMs = 1000;
         private const int DeferredServerOutputDownloadTimeoutMs = 30000;
@@ -1118,24 +1124,26 @@ namespace SDVBridge.Server
 
         private static string WrapSubmittedCode(string originalCode, ProgramCaptureFiles captureFiles)
         {
-            var userCode = RemoveLeadingSubmitSafetyPreamble(originalCode);
+            var userCode = RemoveLeadingSubmitSafetyString(originalCode);
             if (captureFiles == null)
             {
                 var direct = new StringBuilder();
-                direct.AppendLine(SubmitSafetyPreamble);
+                direct.AppendLine(SubmitSafetyString);
                 direct.AppendLine(userCode);
+                direct.AppendLine(SubmitSafetyString);
                 return direct.ToString();
             }
 
             if (captureFiles.UseTempServerFileref)
             {
                 var sbFileref = new StringBuilder();
-                sbFileref.AppendLine(SubmitSafetyPreamble);
+                sbFileref.AppendLine(SubmitSafetyString);
                 sbFileref.AppendLine($"filename {captureFiles.SubmitLogPath} temp;");
                 sbFileref.AppendLine($"filename {captureFiles.SubmitOutputPath} temp;");
                 sbFileref.AppendLine($"proc printto log={captureFiles.SubmitLogPath} print={captureFiles.SubmitOutputPath} new;");
                 sbFileref.AppendLine("run;");
                 sbFileref.AppendLine(userCode);
+                sbFileref.AppendLine(SubmitSafetyString);
                 sbFileref.AppendLine("proc printto;");
                 sbFileref.AppendLine("run;");
                 return sbFileref.ToString();
@@ -1144,12 +1152,13 @@ namespace SDVBridge.Server
             var logRef = TempLogFileref;
             var outRef = TempOutputFileref;
             var sb = new StringBuilder();
-            sb.AppendLine(SubmitSafetyPreamble);
+            sb.AppendLine(SubmitSafetyString);
             sb.AppendLine($"filename {logRef} {ToSasStringLiteral(captureFiles.SubmitLogPath)};");
             sb.AppendLine($"filename {outRef} {ToSasStringLiteral(captureFiles.SubmitOutputPath)};");
             sb.AppendLine($"proc printto log={logRef} print={outRef} new;");
             sb.AppendLine("run;");
             sb.AppendLine(userCode);
+            sb.AppendLine(SubmitSafetyString);
             sb.AppendLine("proc printto;");
             sb.AppendLine("run;");
             sb.AppendLine($"filename {logRef} clear;");
@@ -1157,16 +1166,16 @@ namespace SDVBridge.Server
             return sb.ToString();
         }
 
-        private static string RemoveLeadingSubmitSafetyPreamble(string code)
+        private static string RemoveLeadingSubmitSafetyString(string code)
         {
             var text = code ?? string.Empty;
             var trimmed = text.TrimStart();
-            if (!trimmed.StartsWith(SubmitSafetyPreamble, StringComparison.Ordinal))
+            if (!trimmed.StartsWith(SubmitSafetyString, StringComparison.Ordinal))
             {
                 return text;
             }
 
-            var remaining = trimmed.Substring(SubmitSafetyPreamble.Length);
+            var remaining = trimmed.Substring(SubmitSafetyString.Length);
             return remaining.TrimStart('\r', '\n');
         }
 
