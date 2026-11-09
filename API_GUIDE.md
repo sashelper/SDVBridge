@@ -244,6 +244,8 @@ Content-Type: application/json; charset=utf-8
 
 SDVBridge sends the code between two copies of Enterprise Guide's safety string `;*';*";*/;quit;run;`, as Enterprise Guide does with its own programs. The one after the code closes a quote, double quote or `/*` comment the code left open and ends a pending step, so the capture code that follows still runs and the SAS session is not left waiting inside a string; the one before it recovers from a session left in that state by something else. As in Enterprise Guide, an interactive procedure (PROC SQL, PROC DATASETS, PROC IML and the like) does not stay open from one submit to the next. An unclosed `%macro` definition is not repaired.
 
+Programs run one at a time, in the order they were submitted.
+
 **Response**
 ```json
 {
@@ -310,6 +312,22 @@ curl http://127.0.0.1:17832/jobs/6d8f07af8c8e4f3087d0eab26fe0f3b4
   "completedat": "2026-02-09T01:11:42.9300222+00:00"
 }
 ```
+
+**Response (queued behind another program)**
+```json
+{
+  "jobid": "a41c0e1d0b6a4e0f9a1f3c2d7e8b9a10",
+  "status": "queued",
+  "submittedat": "2026-11-09T17:16:26.3401400+00:00",
+  "waitingfor": "6d8f07af8c8e4f3087d0eab26fe0f3b4"
+}
+```
+
+- `status`: `queued`, `running`, `completed`, `failed` or `cancelled`.
+- `waitingfor`: only on a queued job; the job that is running in SAS now.
+
+### POST /jobs/{jobid}/cancel
+Cancels a program job that is still queued: it becomes `cancelled` and is never sent to SAS. A job that is already running in SAS goes on (the Enterprise Guide submit call it is in cannot be interrupted from SDVBridge) and the response still says `running`; a finished job is not changed. Returns the job's status, or `404` for an unknown job.
 
 ### GET /jobs/{jobid}/artifacts
 Returns generated result artifact metadata (local files produced by the job).
@@ -416,7 +434,7 @@ Dataset browse/download:
 Program execution:
 1. `POST /programs/submit/async` with SAS code.
 2. Read `jobid` from the response.
-3. Poll `GET /jobs/{jobid}` until `status` becomes `completed` or `failed`.
+3. Poll `GET /jobs/{jobid}` until `status` becomes `completed`, `failed` or `cancelled` (`POST /jobs/{jobid}/cancel` takes a queued job back).
 4. Poll `GET /jobs/{jobid}/log?offset=<n>` for near real-time log updates (`n` starts at `0`, then use `nextoffset`).
 5. `GET /jobs/{jobid}/artifacts` to list HTML/PDF/Excel-style results.
 6. `GET /jobs/{jobid}/artifacts/{artifactid}` to download selected artifact files.

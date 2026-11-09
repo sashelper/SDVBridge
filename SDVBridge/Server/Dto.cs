@@ -271,6 +271,10 @@ namespace SDVBridge.Server
 
         [DataMember(Name = "error", EmitDefaultValue = false)]
         public string Error { get; set; }
+
+        // A queued job: the job that is running in SAS now (jobs run one at a time).
+        [DataMember(Name = "waitingfor", EmitDefaultValue = false)]
+        public string WaitingFor { get; set; }
     }
 
     [DataContract]

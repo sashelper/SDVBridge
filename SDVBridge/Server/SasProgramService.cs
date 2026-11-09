@@ -120,6 +120,7 @@ namespace SDVBridge.Server
         private readonly Dictionary<string, ProgramJobRecord> _jobs = new Dictionary<string, ProgramJobRecord>(StringComparer.OrdinalIgnoreCase);
         private readonly Queue<string> _jobOrder = new Queue<string>();
         private readonly SemaphoreSlim _submitGate = new SemaphoreSlim(1, 1);
+        private string _runningJobId;   // the job holding _submitGate (guarded by _syncRoot)
 
         public SasProgramService(EgInteropContext context)
         {
@@ -195,22 +196,105 @@ namespace SDVBridge.Server
         public bool TryGetStatus(string jobId, out JobStatusResponse response)
         {
             response = null;
-            var record = FindJob(jobId);
-            if (record == null)
+            if (string.IsNullOrWhiteSpace(jobId))
             {
                 return false;
             }
 
-            response = new JobStatusResponse
+            lock (_syncRoot)
+            {
+                if (!_jobs.TryGetValue(jobId, out var record))
+                {
+                    return false;
+                }
+
+                response = ToStatusResponse(record);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Cancels a job that is still waiting for the one before it: it is marked "cancelled"
+        /// and never sent to SAS. A job that is already running in SAS goes on (the submit call
+        /// it is in cannot be interrupted from here); the response then still says "running".
+        /// </summary>
+        public bool TryCancel(string jobId, out JobStatusResponse response)
+        {
+            response = null;
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_jobs.TryGetValue(jobId, out var record))
+                {
+                    return false;
+                }
+
+                if (string.Equals(record.Status, "queued", StringComparison.OrdinalIgnoreCase))
+                {
+                    var cancelled = Clone(record);
+                    cancelled.Status = "cancelled";
+                    cancelled.Error = "Cancelled before it was sent to SAS.";
+                    cancelled.CompletedAt = UtcNow();
+                    _jobs[jobId] = cancelled;
+                    record = cancelled;
+                    Log($"Program submit job {jobId} cancelled while queued.");
+                }
+                else
+                {
+                    Log($"Cancel requested for program submit job {jobId} with status '{record.Status}'; not changed.");
+                }
+
+                response = ToStatusResponse(record);
+                return true;
+            }
+        }
+
+        // Call with _syncRoot held.
+        private JobStatusResponse ToStatusResponse(ProgramJobRecord record)
+        {
+            var queued = string.Equals(record.Status, "queued", StringComparison.OrdinalIgnoreCase);
+            return new JobStatusResponse
             {
                 JobId = record.JobId,
                 Status = record.Status,
                 SubmittedAt = record.SubmittedAt,
                 StartedAt = record.StartedAt,
                 CompletedAt = record.CompletedAt,
-                Error = record.Error
+                Error = record.Error,
+                WaitingFor = queued && !string.Equals(_runningJobId, record.JobId, StringComparison.OrdinalIgnoreCase)
+                    ? _runningJobId
+                    : null
             };
-            return true;
+        }
+
+        // Called holding _submitGate: false when the job was cancelled while it waited.
+        private bool TryStartJob(string jobId, bool alreadyRunning)
+        {
+            lock (_syncRoot)
+            {
+                if (_jobs.TryGetValue(jobId, out var record))
+                {
+                    if (string.Equals(record.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    if (!alreadyRunning)
+                    {
+                        var started = Clone(record);
+                        started.Status = "running";
+                        started.StartedAt = UtcNow();
+                        _jobs[jobId] = started;
+                    }
+                }
+
+                _runningJobId = jobId;
+                return true;
+            }
         }
 
         public bool TryGetLog(string jobId, out JobLogResponse response)
@@ -247,6 +331,7 @@ namespace SDVBridge.Server
                 NextOffset = fullLog.Length,
                 IsComplete = string.Equals(record.Status, "completed", StringComparison.OrdinalIgnoreCase)
                              || string.Equals(record.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(record.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
             };
             return true;
         }
@@ -324,14 +409,10 @@ namespace SDVBridge.Server
             await _submitGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!alreadyRunning)
+                if (!TryStartJob(jobId, alreadyRunning))
                 {
-                    var startedAt = UtcNow();
-                    UpdateJob(jobId, record =>
-                    {
-                        record.Status = "running";
-                        record.StartedAt = startedAt;
-                    });
+                    Log($"Program submit job {jobId} was cancelled while queued; not sent to SAS.");
+                    return;
                 }
 
                 ProgramExecutionResult execution;
@@ -367,6 +448,14 @@ namespace SDVBridge.Server
             }
             finally
             {
+                lock (_syncRoot)
+                {
+                    if (string.Equals(_runningJobId, jobId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _runningJobId = null;
+                    }
+                }
+
                 _submitGate.Release();
             }
         }

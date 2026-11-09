@@ -166,6 +166,11 @@ app.MapGet("/jobs/{jobId}", (string jobId) =>
     return Results.Json(response);
 });
 
+app.MapPost("/jobs/{jobId}/cancel", (string jobId) =>
+    store.TryCancelJob(jobId, out var response)
+        ? Results.Json(response)
+        : Results.NotFound(new { error = $"Job '{jobId}' was not found." }));
+
 app.MapGet("/jobs/{jobId}/artifacts", (string jobId) =>
 {
     if (!store.TryGetJobArtifacts(jobId, out var response))
@@ -229,7 +234,8 @@ app.MapGet("/", () => Results.Json(new
         "/jobs/{jobid}/artifacts",
         "/jobs/{jobid}/artifacts/{artifactid}",
         "/jobs/{jobid}/log",
-        "/jobs/{jobid}/output"
+        "/jobs/{jobid}/output",
+        "/jobs/{jobid}/cancel"
     }
 }));
 

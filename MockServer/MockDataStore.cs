@@ -18,6 +18,10 @@ internal sealed class MockDataStore
     private readonly Dictionary<string, IReadOnlyList<SasColumnDto>> _columns;
     private readonly Dictionary<string, DatasetSizeResponse> _sizes;
     private readonly ConcurrentDictionary<string, MockProgramJob> _jobs;
+    // Programs run one at a time, as in the bridge (SasProgramService._submitGate).
+    private readonly SemaphoreSlim _programGate = new(1, 1);
+    private readonly object _programLock = new();
+    private string? _runningProgramJobId;
 
     public MockDataStore()
     {
@@ -372,42 +376,67 @@ internal sealed class MockDataStore
         _ = Task.Run(async () =>
         {
             await Task.Delay(120).ConfigureAwait(false);
-            var startedAt = DateTimeOffset.UtcNow.ToString("o");
-            UpdateJob(jobId, job =>
+            await _programGate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                job.Status = "running";
-                job.StartedAt = startedAt;
-            });
-
-            var logLines = BuildMockProgramLogLines(server, code);
-            var partialLog = new StringBuilder();
-            for (var i = 0; i < logLines.Length; i++)
-            {
-                if (partialLog.Length > 0)
+                lock (_programLock)
                 {
-                    partialLog.Append(Environment.NewLine);
+                    if (_jobs.TryGetValue(jobId, out var waiting) && waiting.Status == "cancelled")
+                    {
+                        return;
+                    }
+
+                    var startedAt = DateTimeOffset.UtcNow.ToString("o");
+                    UpdateJob(jobId, job =>
+                    {
+                        job.Status = "running";
+                        job.StartedAt = startedAt;
+                    });
+                    _runningProgramJobId = jobId;
                 }
 
-                partialLog.Append(logLines[i]);
+                var logLines = BuildMockProgramLogLines(server, code);
+                var partialLog = new StringBuilder();
+                for (var i = 0; i < logLines.Length; i++)
+                {
+                    if (partialLog.Length > 0)
+                    {
+                        partialLog.Append(Environment.NewLine);
+                    }
+
+                    partialLog.Append(logLines[i]);
+                    UpdateJob(jobId, job =>
+                    {
+                        job.Log = partialLog.ToString();
+                    });
+                    await Task.Delay(120).ConfigureAwait(false);
+                }
+
+                var log = partialLog.ToString();
+                var output = BuildMockProgramOutput(server, code);
+                var completedAt = DateTimeOffset.UtcNow.ToString("o");
+                var artifacts = CreateMockArtifacts(jobId, server, output, completedAt);
                 UpdateJob(jobId, job =>
                 {
-                    job.Log = partialLog.ToString();
+                    job.Status = "completed";
+                    job.CompletedAt = completedAt;
+                    job.Log = log;
+                    job.Output = output;
+                    job.Artifacts = artifacts;
                 });
-                await Task.Delay(120).ConfigureAwait(false);
             }
-
-            var log = partialLog.ToString();
-            var output = BuildMockProgramOutput(server, code);
-            var completedAt = DateTimeOffset.UtcNow.ToString("o");
-            var artifacts = CreateMockArtifacts(jobId, server, output, completedAt);
-            UpdateJob(jobId, job =>
+            finally
             {
-                job.Status = "completed";
-                job.CompletedAt = completedAt;
-                job.Log = log;
-                job.Output = output;
-                job.Artifacts = artifacts;
-            });
+                lock (_programLock)
+                {
+                    if (_runningProgramJobId == jobId)
+                    {
+                        _runningProgramJobId = null;
+                    }
+                }
+
+                _programGate.Release();
+            }
         });
 
         return new ProgramSubmitResponse
@@ -416,6 +445,25 @@ internal sealed class MockDataStore
             Status = "queued",
             SubmittedAt = submittedAt
         };
+    }
+
+    // As the bridge: a queued job is cancelled, a running one goes on.
+    public bool TryCancelJob(string jobId, out JobStatusResponse response)
+    {
+        lock (_programLock)
+        {
+            if (_jobs.TryGetValue(jobId ?? string.Empty, out var job) && job.Status == "queued")
+            {
+                UpdateJob(jobId!, j =>
+                {
+                    j.Status = "cancelled";
+                    j.Error = "Cancelled before it was sent to SAS.";
+                    j.CompletedAt = DateTimeOffset.UtcNow.ToString("o");
+                });
+            }
+        }
+
+        return TryGetJobStatus(jobId ?? string.Empty, out response);
     }
 
     public bool TryGetJobArtifacts(string jobId, out JobArtifactsResponse response)
@@ -476,6 +524,13 @@ internal sealed class MockDataStore
             CompletedAt = string.IsNullOrWhiteSpace(job.CompletedAt) ? null : job.CompletedAt,
             Error = string.IsNullOrWhiteSpace(job.Error) ? null : job.Error
         };
+        lock (_programLock)
+        {
+            if (job.Status == "queued" && _runningProgramJobId != null && _runningProgramJobId != job.JobId)
+            {
+                response.WaitingFor = _runningProgramJobId;
+            }
+        }
         return true;
     }
 
@@ -512,6 +567,7 @@ internal sealed class MockDataStore
             NextOffset = fullLog.Length,
             IsComplete = string.Equals(job.Status, "completed", StringComparison.OrdinalIgnoreCase)
                          || string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
         };
         return true;
     }

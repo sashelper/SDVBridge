@@ -98,6 +98,7 @@ public sealed class JobStatusResponse
     public string? StartedAt { get; set; }
     public string? CompletedAt { get; set; }
     public string? Error { get; set; }
+    public string? WaitingFor { get; set; }
 }
 
 public sealed class JobLogResponse

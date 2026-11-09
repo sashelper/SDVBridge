@@ -258,6 +258,21 @@ namespace SDVBridge.Server
                         WriteJson(ctx.Response, HttpStatusCode.OK, statusResponse);
                     }
                 }
+                else if (ctx.Request.HttpMethod == "POST" &&
+                         rawSegments.Length == 3 &&
+                         string.Equals(rawSegments[0], "jobs", StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(rawSegments[2], "cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    var jobId = WebUtility.UrlDecode(rawSegments[1]);
+                    if (!_programService.TryCancel(jobId, out var cancelResponse))
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.NotFound, new ErrorResponse($"Job '{jobId}' was not found."));
+                    }
+                    else
+                    {
+                        WriteJson(ctx.Response, HttpStatusCode.OK, cancelResponse);
+                    }
+                }
                 else if (ctx.Request.HttpMethod == "GET" &&
                          rawSegments.Length == 4 &&
                          string.Equals(rawSegments[0], "jobs", StringComparison.OrdinalIgnoreCase) &&
